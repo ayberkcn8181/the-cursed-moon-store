@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Cursed Moon</vendor>
+  <vendor_url>https://github.com/ayberkcn8181/the-cursed-moon-store</vendor_url>
+
+  <action id="org.freedesktop.policykit.exec">
+    <!-- Fallback documentation only; actual elevation uses pkexec + absolute paths. -->
+  </action>
+
+  <action id="com.cursedmoon.Store.manage-pacman">
+    <description>Install or remove system packages with The Cursed Moon Store</description>
+    <message>Authentication is required to manage system packages</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/pacman</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+  <action id="com.cursedmoon.Store.manage-flatpak">
+    <description>Install or remove Flatpak apps system-wide with The Cursed Moon Store</description>
+    <message>Authentication is required to manage system Flatpak applications</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/flatpak</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>

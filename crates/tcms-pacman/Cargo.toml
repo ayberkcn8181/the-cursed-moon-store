@@ -1,0 +1,16 @@
+[package]
+name = "tcms-pacman"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Pacman / system repository backend for The Cursed Moon Store"
+
+[dependencies]
+tcms-core = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+dirs = { workspace = true }
+futures-util = "0.3"

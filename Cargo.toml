@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tcms-core",
+    "crates/tcms-pacman",
+    "crates/tcms-flatpak",
+    "crates/tcms-aur",
+    "crates/tcms-app",
+]
+default-members = ["crates/tcms-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+authors = ["The Cursed Moon Store Contributors"]
+repository = "https://github.com/ayberkcn8181/the-cursed-moon-store"
+
+[workspace.dependencies]
+tcms-core = { path = "crates/tcms-core" }
+tcms-pacman = { path = "crates/tcms-pacman" }
+tcms-flatpak = { path = "crates/tcms-flatpak" }
+tcms-aur = { path = "crates/tcms-aur" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "process"] }
+dirs = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+gtk4 = { version = "0.10", features = ["v4_14"] }
+libadwaita = { version = "0.8", features = ["v1_6"] }
+glib = "0.21"
+gio = "0.21"

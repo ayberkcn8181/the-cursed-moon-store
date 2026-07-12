@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.cursedmoon.Store</id>
+  <name>The Cursed Moon Store</name>
+  <name xml:lang="tr">The Cursed Moon Store</name>
+  <summary>Software store for Arch-based systems</summary>
+  <summary xml:lang="tr">Arch tabanlı sistemler için yazılım mağazası</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="com.cursedmoon">
+    <name>Cursed Moon</name>
+  </developer>
+  <description>
+    <p>
+      The Cursed Moon Store is a GNOME Software-like application for Arch-based
+      distributions. It unifies system repositories (pacman), Flatpak/Flathub,
+      and the AUR behind one libadwaita interface, with advanced settings for
+      full manual control of store and repository configuration.
+    </p>
+    <p xml:lang="tr">
+      The Cursed Moon Store, Arch tabanlı dağıtımlar için GNOME Software benzeri
+      bir uygulamadır. Sistem depolarını (pacman), Flatpak/Flathub ve AUR’u
+      tek bir libadwaita arayüzünde birleştirir.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.cursedmoon.Store.desktop</launchable>
+  <url type="homepage">https://github.com/ayberkcn8181/the-cursed-moon-store</url>
+  <url type="bugtracker">https://github.com/ayberkcn8181/the-cursed-moon-store/issues</url>
+  <branding>
+    <color type="primary" scheme_preference="light">#1a2744</color>
+    <color type="primary" scheme_preference="dark">#0b1224</color>
+  </branding>
+  <requires>
+    <display_length compare="ge">360</display_length>
+  </requires>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <provides>
+    <binary>the-cursed-moon-store</binary>
+  </provides>
+  <categories>
+    <category>PackageManager</category>
+    <category>System</category>
+  </categories>
+  <keywords>
+    <keyword>software</keyword>
+    <keyword>pacman</keyword>
+    <keyword>flatpak</keyword>
+    <keyword>aur</keyword>
+  </keywords>
+  <releases>
+    <release version="0.1.0" date="2026-07-12">
+      <description>
+        <p>Initial public development release.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

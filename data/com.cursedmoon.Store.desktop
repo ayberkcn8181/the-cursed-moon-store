@@ -1,0 +1,17 @@
+[Desktop Entry]
+Name=The Cursed Moon Store
+Name[tr]=The Cursed Moon Store
+GenericName=Software Store
+GenericName[tr]=Yazılım Mağazası
+Comment=Install and manage software from pacman, Flatpak, and the AUR
+Comment[tr]=pacman, Flatpak ve AUR yazılımlarını kurun ve yönetin
+Exec=the-cursed-moon-store
+Icon=com.cursedmoon.Store
+Terminal=false
+Type=Application
+Categories=System;PackageManager;GTK;
+Keywords=software;store;pacman;flatpak;aur;apps;
+Keywords[tr]=yazılım;mağaza;pacman;flatpak;aur;uygulama;
+StartupNotify=true
+StartupWMClass=com.cursedmoon.Store
+X-GNOME-UsesNotifications=true

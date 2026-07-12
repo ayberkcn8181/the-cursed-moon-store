@@ -1,0 +1,27 @@
+[package]
+name = "tcms-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "The Cursed Moon Store — GNOME Software-like frontend"
+default-run = "the-cursed-moon-store"
+
+[[bin]]
+name = "the-cursed-moon-store"
+path = "src/main.rs"
+
+[dependencies]
+tcms-core = { workspace = true }
+tcms-pacman = { workspace = true }
+tcms-flatpak = { workspace = true }
+tcms-aur = { workspace = true }
+anyhow = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+gtk4 = { workspace = true }
+libadwaita = { workspace = true }
+glib = { workspace = true }
+gio = { workspace = true }
+tokio = { workspace = true }

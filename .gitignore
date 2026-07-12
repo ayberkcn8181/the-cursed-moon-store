@@ -1,0 +1,9 @@
+/target/
+**/*.rs.bk
+*.swp
+*.swo
+.idea/
+.vscode/
+*.AppImage
+dist/
+.DS_Store
