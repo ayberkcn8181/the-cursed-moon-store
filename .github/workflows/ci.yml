@@ -3,18 +3,25 @@ on:
   push:
     branches: [main, master]
   pull_request:
+
+# ubuntu-latest ships libadwaita 1.5; gtk-rs libadwaita 0.8 needs >= 1.6.
 jobs:
   test:
     runs-on: ubuntu-latest
+    container:
+      image: fedora:42
     steps:
       - uses: actions/checkout@v4
+      - name: Install system deps
+        run: |
+          dnf -y install \
+            gcc gcc-c++ clang make git curl \
+            pkgconf-pkg-config \
+            gtk4-devel libadwaita-devel \
+            openssl-devel
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Install GTK deps
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
       - name: Format
         run: cargo fmt --all -- --check
       - name: Clippy
