@@ -102,8 +102,7 @@ impl StoreWindow {
             let controller = gtk4::EventControllerKey::new();
             controller.connect_key_pressed(move |_, key, _, modifier| {
                 use gtk4::gdk::{Key, ModifierType};
-                if modifier.contains(ModifierType::CONTROL_MASK)
-                    && (key == Key::f || key == Key::F)
+                if modifier.contains(ModifierType::CONTROL_MASK) && (key == Key::f || key == Key::F)
                 {
                     view_stack_f.set_visible_child_name("explore");
                     explore_focus.focus_search();

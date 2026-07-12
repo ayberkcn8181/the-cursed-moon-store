@@ -1,8 +1,11 @@
 //! Shared icon downloader — avoids one thread + timer per list row.
+//! GTK `Image` widgets are main-thread only, so state uses `Rc`/`RefCell`.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex};
+use std::rc::Rc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use gtk4::Image;
@@ -11,7 +14,7 @@ use tcms_core::Package;
 
 #[derive(Clone)]
 pub struct IconLoader {
-    inner: Arc<Mutex<IconLoaderInner>>,
+    inner: Rc<RefCell<IconLoaderInner>>,
     runtime: Arc<tokio::runtime::Runtime>,
 }
 
@@ -25,7 +28,7 @@ struct IconLoaderInner {
 impl IconLoader {
     pub fn new(runtime: Arc<tokio::runtime::Runtime>) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(IconLoaderInner::default())),
+            inner: Rc::new(RefCell::new(IconLoaderInner::default())),
             runtime,
         }
     }
@@ -54,17 +57,12 @@ impl IconLoader {
 
         if let Some(path) = cached_icon_path_if_exists(&url) {
             image.set_from_file(Some(&path));
-            if let Ok(mut guard) = self.inner.lock() {
-                guard.ready.insert(url, path);
-            }
+            self.inner.borrow_mut().ready.insert(url, path);
             return;
         }
 
         {
-            let mut guard = match self.inner.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let mut guard = self.inner.borrow_mut();
             if let Some(path) = guard.ready.get(&url) {
                 image.set_from_file(Some(path));
                 return;
@@ -109,10 +107,7 @@ impl IconLoader {
 
     fn finish(&self, url: &str, path: Option<PathBuf>) {
         let waiters = {
-            let mut guard = match self.inner.lock() {
-                Ok(g) => g,
-                Err(e) => e.into_inner(),
-            };
+            let mut guard = self.inner.borrow_mut();
             guard.in_flight.remove(url);
             if let Some(path) = path.clone() {
                 guard.ready.insert(url.to_string(), path);

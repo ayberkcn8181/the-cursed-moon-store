@@ -324,7 +324,7 @@ impl Backend for AurBackend {
         if id.source != PackageSource::Aur {
             return Ok(None);
         }
-        let info = self.rpc_info(&[id.id.clone()]).await?;
+        let info = self.rpc_info(std::slice::from_ref(&id.id)).await?;
         let Some(pkg) = info.get(&id.id) else {
             return Ok(None);
         };
@@ -367,7 +367,7 @@ impl Backend for AurBackend {
                 packages.push(Package {
                     id: PackageId::new(PackageSource::Aur, name),
                     name: name.clone(),
-                    summary: tcms_core::i18n::t_args("aur.foreign_summary", &[("name", &name)]),
+                    summary: tcms_core::i18n::t_args("aur.foreign_summary", &[("name", name)]),
                     description: String::new(),
                     version: local_ver.clone(),
                     available_version: None,
@@ -387,7 +387,7 @@ impl Backend for AurBackend {
                 });
             }
         }
-        packages.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        packages.sort_by_key(|a| a.name.to_lowercase());
         Ok(packages)
     }
 
@@ -442,13 +442,12 @@ impl Backend for AurBackend {
         }
         tcms_core::assert_safe_package_id(id)?;
         // Removal is still pacman; do not append AUR-helper-specific extra args.
-        let args = vec!["-Rns".to_string(), "--noconfirm".to_string(), id.id.clone()];
+        let args = ["-Rns".to_string(), "--noconfirm".to_string(), id.id.clone()];
         let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
         tcms_core::process::run_privileged_pacman(&str_args, &format!("remove {}", id.id)).await?;
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {

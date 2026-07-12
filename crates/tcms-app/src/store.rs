@@ -524,10 +524,8 @@ impl StoreService {
             };
             let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
             let mut packages = Vec::new();
-            for part in [p, f, a] {
-                if let Some(list) = part {
-                    packages.extend(list);
-                }
+            for list in [p, f, a].into_iter().flatten() {
+                packages.extend(list);
             }
             packages
         })
@@ -559,10 +557,8 @@ impl StoreService {
             };
             let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
             let mut packages = Vec::new();
-            for part in [p, f, a] {
-                if let Some(list) = part {
-                    packages.extend(list);
-                }
+            for list in [p, f, a].into_iter().flatten() {
+                packages.extend(list);
             }
             let mut seen = std::collections::HashSet::new();
             packages.sort_by(|a, b| {
@@ -609,10 +605,8 @@ impl StoreService {
             };
             let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
             let mut packages = Vec::new();
-            for part in [p, f, a] {
-                if let Some(list) = part {
-                    packages.extend(list);
-                }
+            for list in [p, f, a].into_iter().flatten() {
+                packages.extend(list);
             }
             packages.sort_by_key(|a| a.name.to_lowercase());
             packages

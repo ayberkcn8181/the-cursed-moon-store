@@ -115,9 +115,10 @@ where
         .stderr(Stdio::piped());
     inherit_gui_env(&mut cmd);
 
-    let output = cmd.output().await.map_err(|e| {
-        Error::Command(format!("failed to spawn {:?}: {e}", program.as_ref()))
-    })?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| Error::Command(format!("failed to spawn {:?}: {e}", program.as_ref())))?;
 
     Ok(CommandOutput {
         status: output.status.code().unwrap_or(-1),
@@ -165,9 +166,10 @@ pub async fn run_privileged(program: &str, args: &[&str], context: &str) -> Resu
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd.output().await.map_err(|e| {
-            Error::Command(format!("failed to spawn pkexec for {program}: {e}"))
-        })?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| Error::Command(format!("failed to spawn pkexec for {program}: {e}")))?;
 
         let out = CommandOutput {
             status: output.status.code().unwrap_or(-1),
@@ -177,9 +179,7 @@ pub async fn run_privileged(program: &str, args: &[&str], context: &str) -> Resu
         if !out.success() {
             let hint = if out.status == 126 || out.status == 127 {
                 " (is the Polkit agent running? try unlocking the screen)"
-            } else if out.stderr.to_lowercase().contains("not authorized")
-                || out.status == 126
-            {
+            } else if out.stderr.to_lowercase().contains("not authorized") || out.status == 126 {
                 " (authorization denied or cancelled)"
             } else {
                 ""

@@ -104,7 +104,6 @@ pub struct AppConfig {
     pub enable_pacman: bool,
     pub enable_flatpak: bool,
     pub enable_aur: bool,
-    pub show_adult_content: bool,
     /// Show codec packages in search and installed lists.
     pub show_codecs: bool,
     /// Show driver / firmware packages in search and installed lists.
@@ -123,7 +122,6 @@ impl Default for AppConfig {
             enable_pacman: true,
             enable_flatpak: true,
             enable_aur: true,
-            show_adult_content: false,
             // Consumer-friendly defaults: hide non-app packages.
             show_codecs: false,
             show_drivers: false,
@@ -213,8 +211,10 @@ mod tests {
 
     #[test]
     fn custom_priority_order() {
-        let mut adv = AdvancedConfig::default();
-        adv.install_source_priority = vec!["aur".into(), "flatpak".into(), "pacman".into()];
+        let adv = AdvancedConfig {
+            install_source_priority: vec!["aur".into(), "flatpak".into(), "pacman".into()],
+            ..Default::default()
+        };
         assert_eq!(adv.priority_rank(PackageSource::Aur), 0);
         assert_eq!(adv.priority_rank(PackageSource::Flatpak), 1);
         assert_eq!(adv.priority_rank(PackageSource::Pacman), 2);

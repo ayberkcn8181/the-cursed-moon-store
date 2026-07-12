@@ -137,7 +137,10 @@ async fn resolve_packages(apps: &mut [DesktopApp]) {
         .map(|(idx, app)| (idx, app.desktop_path.to_string_lossy().into_owned()))
         .collect();
 
-    let results: Vec<(usize, Option<(String, Option<String>)>)> = stream::iter(paths)
+    type PacmanOwner = (String, Option<String>);
+    type PacmanQoHit = (usize, Option<PacmanOwner>);
+
+    let results: Vec<PacmanQoHit> = stream::iter(paths)
         .map(|(idx, path)| async move {
             let out = match run("pacman", ["-Qo", &path]).await {
                 Ok(o) => o,
@@ -146,17 +149,17 @@ async fn resolve_packages(apps: &mut [DesktopApp]) {
             if !out.success() {
                 return (idx, None);
             }
-            let owned = out
-                .stdout
-                .trim()
-                .split("owned by ")
-                .nth(1)
-                .and_then(|rest| {
-                    let mut parts = rest.split_whitespace();
-                    let name = parts.next()?.to_string();
-                    let version = parts.next().map(str::to_string);
-                    Some((name, version))
-                });
+            let owned: Option<PacmanOwner> =
+                out.stdout
+                    .trim()
+                    .split("owned by ")
+                    .nth(1)
+                    .and_then(|rest| {
+                        let mut parts = rest.split_whitespace();
+                        let name = parts.next()?.to_string();
+                        let version = parts.next().map(str::to_string);
+                        Some((name, version))
+                    });
             (idx, owned)
         })
         .buffer_unordered(16)
