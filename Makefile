@@ -15,7 +15,13 @@ release:
 test:
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) cargo test --workspace
 
-install: release
+# Do not depend on `release` here: `sudo make install` must not run cargo as root
+# (rustup has no default toolchain for root). Build as your user first: `make release`
+install:
+	@test -x $(CARGO_TARGET_DIR)/release/the-cursed-moon-store || { \
+		echo "error: binary missing — run 'make release' as your user, then 'sudo make install'"; \
+		exit 1; \
+	}
 	install -Dm755 $(CARGO_TARGET_DIR)/release/the-cursed-moon-store $(DESTDIR)$(BINDIR)/the-cursed-moon-store
 	install -Dm644 data/$(APPID).desktop $(DESTDIR)$(DATADIR)/applications/$(APPID).desktop
 	install -Dm644 data/$(APPID).metainfo.xml $(DESTDIR)$(DATADIR)/metainfo/$(APPID).metainfo.xml
