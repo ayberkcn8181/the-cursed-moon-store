@@ -149,16 +149,19 @@ impl StoreService {
 
     /// Rich package details for the detail page, plus alternate sources.
     pub fn package_details(&self, pkg: &Package) -> (Package, Vec<Package>) {
-        let detailed = self.enrich_one(pkg);
+        let mut detailed = self.enrich_one(pkg);
         let mut alts = self.resolve_install_candidates_light(pkg);
         alts.retain(|p| p.id != detailed.id);
+        self.annotate_install_states(std::slice::from_mut(&mut detailed));
+        self.annotate_install_states(&mut alts);
         (detailed, alts)
     }
 
     fn enrich_one(&self, pkg: &Package) -> Package {
         let (pacman, flatpak, aur) = self.backends();
         let id = pkg.id.clone();
-        self.runtime
+        let mut detailed = self
+            .runtime
             .block_on(async {
                 match id.source {
                     PackageSource::Pacman if pacman.enabled() => {
@@ -173,7 +176,68 @@ impl StoreService {
                     _ => None,
                 }
             })
-            .unwrap_or_else(|| pkg.clone())
+            .unwrap_or_else(|| pkg.clone());
+
+        // Keep the list entry's nicer display name / icon when backends return stubs.
+        if !pkg.name.is_empty()
+            && pkg.name != detailed.id.id
+            && (detailed.name.is_empty()
+                || detailed.name == detailed.id.id
+                || pkg.name.chars().any(|c| c.is_uppercase()))
+        {
+            detailed.name = pkg.name.clone();
+        }
+        if let Some(icon) = pkg.icon_name.as_ref() {
+            let generic = matches!(
+                detailed.icon_name.as_deref(),
+                None | Some("package-x-generic") | Some("application-x-executable")
+            );
+            if generic {
+                detailed.icon_name = Some(icon.clone());
+            }
+        }
+        if detailed.icon_url.is_none() {
+            detailed.icon_url = pkg.icon_url.clone();
+        }
+        if detailed.summary.is_empty() {
+            detailed.summary = pkg.summary.clone();
+        }
+        if detailed.description.is_empty() {
+            detailed.description = pkg.description.clone();
+        }
+        // Prefer richer metadata from either side.
+        if detailed.publisher.is_none() {
+            detailed.publisher = pkg.publisher.clone();
+        }
+        if detailed.developer.is_none() {
+            detailed.developer = pkg.developer.clone();
+        }
+        if detailed.license.is_none() {
+            detailed.license = pkg.license.clone();
+        }
+        if detailed.homepage.is_none() {
+            detailed.homepage = pkg.homepage.clone();
+        }
+        if detailed.bug_url.is_none() {
+            detailed.bug_url = pkg.bug_url.clone();
+        }
+        if detailed.donate_url.is_none() {
+            detailed.donate_url = pkg.donate_url.clone();
+        }
+        if detailed.size_bytes.is_none() {
+            detailed.size_bytes = pkg.size_bytes;
+        }
+        if detailed.is_proprietary.is_none() {
+            detailed.is_proprietary = pkg.is_proprietary;
+        }
+        if matches!(pkg.state, InstallState::Installed | InstallState::Updatable) {
+            detailed.state = pkg.state;
+            if detailed.available_version.is_none() {
+                detailed.available_version = pkg.available_version.clone();
+            }
+        }
+        detailed.apply_license_heuristics();
+        detailed
     }
 
     pub fn package_details_async<F>(&self, pkg: Package, on_done: F)
@@ -273,8 +337,9 @@ impl StoreService {
     }
 
     pub fn updates(&self) -> Vec<Package> {
-        // Respect General → visibility toggles so system/codec floods stay hidden by default.
-        self.filter_catalog(self.collect_updates())
+        // Updates should list everything pacman/Flatpak/AUR report — do not hide
+        // system/codec/driver packages behind Explore visibility toggles.
+        self.collect_updates()
     }
 
     /// Featured home sections — apps only (never codecs/drivers/system).
@@ -336,21 +401,37 @@ impl StoreService {
         sections
     }
 
-    /// Mark packages that are already installed (exact id match per source).
+    /// Mark packages that are already installed, including cross-source matches
+    /// (e.g. pacman Firefox makes Flathub Firefox show as installed in lists).
     fn annotate_install_states(&self, packages: &mut [Package]) {
         if packages.is_empty() {
             return;
         }
         let installed = self.collect_installed();
-        let mut by_id = std::collections::HashMap::new();
-        for pkg in &installed {
-            by_id.insert(pkg.id.clone(), pkg.state);
-        }
         for pkg in packages.iter_mut() {
-            if let Some(state) = by_id.get(&pkg.id) {
-                if pkg.state == InstallState::Available {
-                    pkg.state = *state;
+            if let Some(exact) = installed.iter().find(|candidate| candidate.id == pkg.id) {
+                pkg.state = exact.state;
+                pkg.installed_elsewhere = false;
+                if pkg.available_version.is_none() {
+                    pkg.available_version = exact.available_version.clone();
                 }
+                if pkg.version.is_empty() || pkg.version == "installed" {
+                    pkg.version = exact.version.clone();
+                }
+                continue;
+            }
+
+            if pkg.state != InstallState::Available {
+                pkg.installed_elsewhere = false;
+                continue;
+            }
+
+            if installed
+                .iter()
+                .any(|candidate| packages_match(pkg, candidate))
+            {
+                pkg.state = InstallState::Installed;
+                pkg.installed_elsewhere = true;
             }
         }
     }
@@ -584,21 +665,39 @@ impl StoreService {
         self.runtime.block_on(async {
             let pacman_f = async {
                 if pacman.enabled() {
-                    pacman.updates().await.ok()
+                    match pacman.updates().await {
+                        Ok(list) => Some(list),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "pacman updates failed");
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
             };
             let flatpak_f = async {
                 if flatpak.enabled() {
-                    flatpak.updates().await.ok()
+                    match flatpak.updates().await {
+                        Ok(list) => Some(list),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "flatpak updates failed");
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
             };
             let aur_f = async {
                 if aur.enabled() {
-                    aur.updates().await.ok()
+                    match aur.updates().await {
+                        Ok(list) => Some(list),
+                        Err(err) => {
+                            tracing::warn!(error = %err, "aur updates failed");
+                            None
+                        }
+                    }
                 } else {
                     None
                 }

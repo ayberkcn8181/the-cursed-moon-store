@@ -48,6 +48,23 @@ struct AurPkg {
     popularity: Option<f64>,
 }
 
+fn parse_helper_updates(output: &str) -> HashMap<String, (String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 && parts[2] == "->" {
+                Some((
+                    parts[0].to_string(),
+                    (parts[1].to_string(), parts[3].to_string()),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 impl AurBackend {
     pub fn new(
         enabled: bool,
@@ -208,6 +225,15 @@ impl AurBackend {
         out.map(|o| o.stdout.trim() == "1").unwrap_or(false)
     }
 
+    async fn helper_updates(&self) -> Result<HashMap<String, (String, String)>> {
+        let helper = self.resolve_helper().await?;
+        let out = run(&helper, ["-Qua", "--color", "never"]).await?;
+        if !out.success() && out.status != 1 {
+            out.ensure_success("AUR update query")?;
+        }
+        Ok(parse_helper_updates(&out.stdout))
+    }
+
     fn to_package(pkg: &AurPkg, state: InstallState, local_version: Option<String>) -> Package {
         let summary = pkg.description.clone().unwrap_or_else(|| pkg.name.clone());
         let mut pkg = Package {
@@ -233,6 +259,7 @@ impl AurBackend {
             homepage: pkg.url.clone(),
             size_bytes: None,
             state,
+            installed_elsewhere: false,
             categories: vec!["AUR".into()],
         };
         pkg.apply_license_heuristics();
@@ -383,6 +410,7 @@ impl Backend for AurBackend {
                     homepage: None,
                     size_bytes: None,
                     state: InstallState::Installed,
+                    installed_elsewhere: false,
                     categories: vec!["AUR".into()],
                 });
             }
@@ -393,12 +421,57 @@ impl Backend for AurBackend {
 
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
-        Ok(self
-            .installed()
-            .await?
-            .into_iter()
-            .filter(|p| p.state == InstallState::Updatable)
-            .collect())
+        let updates = match self.helper_updates().await {
+            Ok(updates) => updates,
+            Err(error) => {
+                tracing::warn!(error = %error, "AUR helper update query failed; using RPC fallback");
+                return Ok(self
+                    .installed()
+                    .await?
+                    .into_iter()
+                    .filter(|package| package.state == InstallState::Updatable)
+                    .collect());
+            }
+        };
+        if updates.is_empty() {
+            return Ok(Vec::new());
+        }
+        let names: Vec<String> = updates.keys().cloned().collect();
+        let info = self.rpc_info(&names).await.unwrap_or_default();
+        let mut packages = Vec::with_capacity(updates.len());
+        for (name, (local_version, available_version)) in updates {
+            if let Some(remote) = info.get(&name) {
+                let mut package =
+                    Self::to_package(remote, InstallState::Updatable, Some(local_version));
+                package.available_version = Some(available_version);
+                packages.push(package);
+            } else {
+                packages.push(Package {
+                    id: PackageId::new(PackageSource::Aur, &name),
+                    name: name.clone(),
+                    summary: tcms_core::i18n::t_args("aur.foreign_summary", &[("name", &name)]),
+                    description: String::new(),
+                    version: local_version,
+                    available_version: Some(available_version),
+                    icon_name: Some("package-x-generic".into()),
+                    icon_url: None,
+                    publisher: None,
+                    bug_url: Some(format!("https://aur.archlinux.org/packages/{name}")),
+                    donate_url: None,
+                    permissions: Some(tcms_core::i18n::t("perm.aur_package")),
+                    is_proprietary: None,
+                    developer: None,
+                    license: None,
+                    homepage: None,
+                    size_bytes: None,
+                    state: InstallState::Updatable,
+                    installed_elsewhere: false,
+                    categories: vec!["AUR".into()],
+                });
+            }
+        }
+        packages.sort_by_key(|package| package.name.to_lowercase());
+        Ok(packages)
     }
 
     async fn install(&self, id: &PackageId) -> Result<()> {
@@ -480,5 +553,16 @@ mod tests {
         assert_eq!(parsed.results.len(), 1);
         assert_eq!(parsed.results[0].name, "spotify");
         assert_eq!(parsed.results[0].version, "1.2.3-1");
+    }
+
+    #[test]
+    fn parses_helper_update_lines() {
+        let updates = parse_helper_updates(
+            "cursor-nightly-bin 3.11.18-1 -> 3.11.19-1\ninvalid status line\n",
+        );
+        assert_eq!(
+            updates.get("cursor-nightly-bin"),
+            Some(&("3.11.18-1".into(), "3.11.19-1".into()))
+        );
     }
 }

@@ -29,6 +29,11 @@ impl SettingsPage {
             &t("settings.sources"),
         );
         view_stack.add_titled(
+            &compatibility_page(&store, &config),
+            Some("compatibility"),
+            &t("settings.compatibility"),
+        );
+        view_stack.add_titled(
             &advanced_page(&store, &config),
             Some("advanced"),
             &t("settings.advanced"),
@@ -229,6 +234,121 @@ fn sources_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
 
     list.append(&group);
     wrap_scroll(&list)
+}
+
+fn compatibility_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
+    let list = GtkBox::new(Orientation::Vertical, 18);
+    let behavior = libadwaita::PreferencesGroup::builder()
+        .title(t("compat.settings_behavior"))
+        .description(t("compat.settings_behavior_desc"))
+        .build();
+    let auto_detect = switch_row(
+        &t("compat.auto_detect"),
+        &t("compat.auto_detect_desc"),
+        config.compatibility.auto_detect,
+    );
+    let downloads = switch_row(
+        &t("compat.allow_downloads"),
+        &t("compat.allow_downloads_desc"),
+        config.compatibility.allow_artifact_downloads,
+    );
+    let channel = libadwaita::ComboRow::builder()
+        .title(t("compat.release_channel"))
+        .subtitle(t("compat.release_channel_desc"))
+        .build();
+    let channel_labels = [t("compat.channel_stable"), t("compat.channel_prerelease")];
+    let channel_refs: Vec<&str> = channel_labels.iter().map(String::as_str).collect();
+    channel.set_model(Some(&gtk4::StringList::new(&channel_refs)));
+    channel.set_selected(if config.compatibility.release_channel == "prerelease" {
+        1
+    } else {
+        0
+    });
+    behavior.add(&auto_detect.0);
+    behavior.add(&downloads.0);
+    behavior.add(&channel);
+    list.append(&behavior);
+
+    let paths = libadwaita::PreferencesGroup::builder()
+        .title(t("compat.custom_paths"))
+        .description(t("compat.custom_paths_desc"))
+        .build();
+    let steam = entry_row(
+        &t("compat.path_steam"),
+        &t("compat.path_native_desc"),
+        &config.compatibility.steam_root,
+    );
+    let steam_flatpak = entry_row(
+        &t("compat.path_steam_flatpak"),
+        &t("compat.path_flatpak_desc"),
+        &config.compatibility.steam_flatpak_root,
+    );
+    let lutris = entry_row(
+        &t("compat.path_lutris"),
+        &t("compat.path_native_desc"),
+        &config.compatibility.lutris_root,
+    );
+    let lutris_flatpak = entry_row(
+        &t("compat.path_lutris_flatpak"),
+        &t("compat.path_flatpak_desc"),
+        &config.compatibility.lutris_flatpak_root,
+    );
+    let heroic = entry_row(
+        &t("compat.path_heroic"),
+        &t("compat.path_native_desc"),
+        &config.compatibility.heroic_root,
+    );
+    let heroic_flatpak = entry_row(
+        &t("compat.path_heroic_flatpak"),
+        &t("compat.path_flatpak_desc"),
+        &config.compatibility.heroic_flatpak_root,
+    );
+    for row in [
+        &steam.0,
+        &steam_flatpak.0,
+        &lutris.0,
+        &lutris_flatpak.0,
+        &heroic.0,
+        &heroic_flatpak.0,
+    ] {
+        paths.add(row);
+    }
+    list.append(&paths);
+
+    let save = gtk4::Button::builder()
+        .label(t("compat.save_settings"))
+        .halign(Align::End)
+        .css_classes(["suggested-action", "pill"])
+        .build();
+    let store_save = store.clone();
+    save.connect_clicked(move |_| {
+        let mut config = store_save.config();
+        config.compatibility.auto_detect = auto_detect.1.is_active();
+        config.compatibility.allow_artifact_downloads = downloads.1.is_active();
+        config.compatibility.release_channel = if channel.selected() == 1 {
+            "prerelease".into()
+        } else {
+            "stable".into()
+        };
+        config.compatibility.steam_root = steam.1.text().to_string();
+        config.compatibility.steam_flatpak_root = steam_flatpak.1.text().to_string();
+        config.compatibility.lutris_root = lutris.1.text().to_string();
+        config.compatibility.lutris_flatpak_root = lutris_flatpak.1.text().to_string();
+        config.compatibility.heroic_root = heroic.1.text().to_string();
+        config.compatibility.heroic_flatpak_root = heroic_flatpak.1.text().to_string();
+        if store_save.save_config(config).is_ok() {
+            if let Some(app) = gio::Application::default() {
+                app.activate_action("reload-lists", None);
+            }
+        }
+    });
+    list.append(&save);
+
+    ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .vexpand(true)
+        .child(&list)
+        .build()
 }
 
 fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {

@@ -107,6 +107,11 @@ pub struct Package {
     pub is_proprietary: Option<bool>,
     pub size_bytes: Option<u64>,
     pub state: InstallState,
+    /// True when this catalog entry is treated as installed because the same app
+    /// is present from another source. Per-source Install still belongs on the
+    /// detail page repository rows.
+    #[serde(default)]
+    pub installed_elsewhere: bool,
     pub categories: Vec<String>,
 }
 
@@ -138,6 +143,7 @@ impl Package {
             is_proprietary: None,
             size_bytes: None,
             state,
+            installed_elsewhere: false,
             categories: Vec::new(),
         }
     }

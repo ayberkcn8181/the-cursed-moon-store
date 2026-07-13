@@ -98,6 +98,38 @@ impl AdvancedConfig {
     }
 }
 
+/// Paths and release preferences for game compatibility tools.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompatibilityConfig {
+    pub auto_detect: bool,
+    pub steam_root: String,
+    pub steam_flatpak_root: String,
+    pub lutris_root: String,
+    pub lutris_flatpak_root: String,
+    pub heroic_root: String,
+    pub heroic_flatpak_root: String,
+    /// `stable` or `prerelease`.
+    pub release_channel: String,
+    pub allow_artifact_downloads: bool,
+}
+
+impl Default for CompatibilityConfig {
+    fn default() -> Self {
+        Self {
+            auto_detect: true,
+            steam_root: String::new(),
+            steam_flatpak_root: String::new(),
+            lutris_root: String::new(),
+            lutris_flatpak_root: String::new(),
+            heroic_root: String::new(),
+            heroic_flatpak_root: String::new(),
+            release_channel: "stable".into(),
+            allow_artifact_downloads: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -113,6 +145,7 @@ pub struct AppConfig {
     pub automatic_updates_check: bool,
     pub download_updates_in_background: bool,
     pub language: String,
+    pub compatibility: CompatibilityConfig,
     pub advanced: AdvancedConfig,
 }
 
@@ -129,6 +162,7 @@ impl Default for AppConfig {
             automatic_updates_check: true,
             download_updates_in_background: false,
             language: "system".into(),
+            compatibility: CompatibilityConfig::default(),
             advanced: AdvancedConfig::default(),
         }
     }
@@ -250,6 +284,7 @@ mod tests {
             is_proprietary: None,
             size_bytes: None,
             state: InstallState::Available,
+            installed_elsewhere: false,
             categories: vec!["Codec".into()],
         };
         assert!(cfg.allows_package(&app));

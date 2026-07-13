@@ -63,10 +63,11 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
         .build();
     row.add_suffix(&badge);
 
-    let button = package_action_button(pkg, bridge);
-    row.add_suffix(&button);
+    if let Some(button) = list_action_button(pkg, bridge) {
+        row.add_suffix(&button);
+    }
 
-    if pkg.state == InstallState::Updatable {
+    if pkg.state == InstallState::Updatable && !pkg.installed_elsewhere {
         let remove_btn = gtk4::Button::builder()
             .label(t("action.remove"))
             .valign(gtk4::Align::Center)
@@ -86,13 +87,52 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
         bridge_open.open_package(&pkg_open);
     });
 
-    let list_row = ListBoxRow::new();
-    list_row.set_child(Some(&row));
-    list_row
+    // ActionRow is already a ListBoxRow; nesting it inside another ListBoxRow
+    // prevents the activated signal from firing when the list row is clicked.
+    row.upcast()
 }
 
+/// Actions for Explore / Installed / Updates lists.
+/// Install is intentionally omitted here — it only appears next to each
+/// repository on the detail page.
+pub fn list_action_button(pkg: &Package, bridge: &UiBridge) -> Option<gtk4::Button> {
+    if pkg.installed_elsewhere {
+        return None;
+    }
+    match pkg.state {
+        InstallState::Available => None,
+        InstallState::Installed => Some(action_button(
+            PackageAction::Remove,
+            t("action.remove"),
+            true,
+            pkg,
+            bridge,
+        )),
+        InstallState::Updatable => Some(action_button(
+            PackageAction::Update,
+            t("action.update"),
+            false,
+            pkg,
+            bridge,
+        )),
+        InstallState::Installing | InstallState::Removing => Some(action_button(
+            PackageAction::Install,
+            "…".to_string(),
+            false,
+            pkg,
+            bridge,
+        )),
+    }
+}
+
+/// Per-repository action used on the detail page source rows.
 pub fn package_action_button(pkg: &Package, bridge: &UiBridge) -> gtk4::Button {
-    let (action, label, destructive) = match pkg.state {
+    let source_state = if pkg.installed_elsewhere {
+        InstallState::Available
+    } else {
+        pkg.state
+    };
+    let (action, label, destructive) = match source_state {
         InstallState::Available => (PackageAction::Install, t("action.install"), false),
         InstallState::Installed => (PackageAction::Remove, t("action.remove"), true),
         InstallState::Updatable => (PackageAction::Update, t("action.update"), false),
@@ -100,7 +140,16 @@ pub fn package_action_button(pkg: &Package, bridge: &UiBridge) -> gtk4::Button {
             (PackageAction::Install, "…".to_string(), false)
         }
     };
+    action_button(action, label, destructive, pkg, bridge)
+}
 
+fn action_button(
+    action: PackageAction,
+    label: String,
+    destructive: bool,
+    pkg: &Package,
+    bridge: &UiBridge,
+) -> gtk4::Button {
     let button = gtk4::Button::builder()
         .label(&label)
         .valign(gtk4::Align::Center)
@@ -112,7 +161,7 @@ pub fn package_action_button(pkg: &Package, bridge: &UiBridge) -> gtk4::Button {
     }
     button.add_css_class("pill");
 
-    if matches!(pkg.state, InstallState::Installing | InstallState::Removing) {
+    if matches!(pkg.state, InstallState::Installing | InstallState::Removing) || label == "…" {
         button.set_sensitive(false);
     }
 

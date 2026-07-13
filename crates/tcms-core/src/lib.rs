@@ -14,7 +14,7 @@ pub mod util;
 
 pub use backend::{Backend, BackendId, PackageAction, SearchQuery, SearchResult};
 pub use classify::{classify_package, PackageKind};
-pub use config::{AdvancedConfig, AppConfig, RepoOverride};
+pub use config::{AdvancedConfig, AppConfig, CompatibilityConfig, RepoOverride};
 pub use error::{Error, Result};
 pub use featured::{fetch_flathub_app, fetch_flathub_collection, FeaturedSection};
 pub use i18n::{t, t_args, Language};

@@ -10,36 +10,40 @@ use crate::store::UiBridge;
 use crate::widgets::{load_package_icon, package_action_button};
 
 pub fn push_detail_page(nav: &libadwaita::NavigationView, bridge: &UiBridge, package: Package) {
+    let toolbar = libadwaita::ToolbarView::new();
+    let header = libadwaita::HeaderBar::new();
+    toolbar.add_top_bar(&header);
+
     let loading = libadwaita::StatusPage::builder()
         .icon_name("content-loading-symbolic")
         .title(t("detail.loading"))
         .vexpand(true)
         .build();
+    toolbar.set_content(Some(&loading));
+
     let page = libadwaita::NavigationPage::builder()
         .title(&package.name)
-        .child(&loading)
+        .child(&toolbar)
         .build();
     nav.push(&page);
 
-    let nav = nav.clone();
     let bridge = bridge.clone();
     let page_weak = page.downgrade();
+    let toolbar_weak = toolbar.downgrade();
     let store = bridge.store.clone();
     store.package_details_async(package, move |detailed, alts| {
         let Some(page) = page_weak.upgrade() else {
             return;
         };
+        let Some(toolbar) = toolbar_weak.upgrade() else {
+            return;
+        };
         page.set_title(&detailed.name);
-        page.set_child(Some(&build_detail_content(&detailed, &alts, &bridge, &nav)));
+        toolbar.set_content(Some(&build_detail_content(&detailed, &alts, &bridge)));
     });
 }
 
-fn build_detail_content(
-    pkg: &Package,
-    alts: &[Package],
-    bridge: &UiBridge,
-    _nav: &libadwaita::NavigationView,
-) -> ScrolledWindow {
+fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> ScrolledWindow {
     let root = GtkBox::new(Orientation::Vertical, 18);
     root.set_margin_top(18);
     root.set_margin_bottom(24);
@@ -86,22 +90,35 @@ fn build_detail_content(
 
     let actions = GtkBox::new(Orientation::Vertical, 8);
     actions.set_valign(Align::Center);
-    let action_btn = package_action_button(pkg, bridge);
-    actions.append(&action_btn);
-    if matches!(
-        pkg.state,
-        tcms_core::InstallState::Installed | tcms_core::InstallState::Updatable
-    ) {
+    // Install belongs only next to each repository below. The header shows
+    // update/remove/open for a source that is actually installed on this system.
+    if let Some(installed) = header_action_package(pkg, alts) {
+        if installed.state == tcms_core::InstallState::Updatable {
+            let update_btn = package_action_button(installed, bridge);
+            actions.append(&update_btn);
+            let remove_btn = gtk4::Button::builder()
+                .label(t("action.remove"))
+                .css_classes(["pill", "destructive-action"])
+                .build();
+            let bridge_rm = bridge.clone();
+            let pkg_rm = installed.clone();
+            remove_btn.connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                bridge_rm.run_action(tcms_core::PackageAction::Remove, &pkg_rm);
+            });
+            actions.append(&remove_btn);
+        } else {
+            let remove_btn = package_action_button(installed, bridge);
+            actions.append(&remove_btn);
+        }
         let open_btn = gtk4::Button::builder()
             .label(t("action.open"))
             .css_classes(["pill"])
             .build();
-        let pkg_open = pkg.clone();
+        let pkg_open = installed.clone();
         let win = bridge.window.clone();
         open_btn.connect_clicked(move |_| {
-            if !crate::store::launch_package(&pkg_open, &win) {
-                // Toast via banner title briefly is awkward; UriLauncher already tried.
-            }
+            let _ = crate::store::launch_package(&pkg_open, &win);
         });
         actions.append(&open_btn);
     }
@@ -126,25 +143,39 @@ fn build_detail_content(
     meta.add(&info_row(
         &t("detail.publisher"),
         pkg.display_publisher().unwrap_or(&t("detail.unknown")),
+        None,
+        bridge,
     ));
     meta.add(&info_row(
         &t("detail.license"),
         pkg.license.as_deref().unwrap_or(&t("detail.unknown")),
+        None,
+        bridge,
     ));
     let license_kind = match pkg.is_proprietary {
         Some(true) => t("detail.proprietary"),
         Some(false) => t("detail.opensource"),
         None => t("detail.unknown"),
     };
-    meta.add(&info_row(&t("detail.license_kind"), &license_kind));
+    meta.add(&info_row(
+        &t("detail.license_kind"),
+        &license_kind,
+        None,
+        bridge,
+    ));
     if let Some(home) = pkg.homepage.as_deref() {
-        meta.add(&info_row(&t("detail.homepage"), home));
+        meta.add(&info_row(&t("detail.homepage"), home, Some(home), bridge));
     }
     if let Some(donate) = pkg.donate_url.as_deref() {
-        meta.add(&info_row(&t("detail.donate"), donate));
+        meta.add(&info_row(&t("detail.donate"), donate, Some(donate), bridge));
     }
     if let Some(size) = pkg.size_bytes {
-        meta.add(&info_row(&t("detail.size"), &format_size(size)));
+        meta.add(&info_row(
+            &t("detail.size"),
+            &format_size(size),
+            None,
+            bridge,
+        ));
     }
     root.append(&meta);
 
@@ -217,11 +248,36 @@ fn section_title(text: &str) -> Label {
         .build()
 }
 
-fn info_row(title: &str, subtitle: &str) -> libadwaita::ActionRow {
-    libadwaita::ActionRow::builder()
+fn header_action_package<'a>(pkg: &'a Package, alts: &'a [Package]) -> Option<&'a Package> {
+    std::iter::once(pkg).chain(alts.iter()).find(|candidate| {
+        !candidate.installed_elsewhere
+            && matches!(
+                candidate.state,
+                tcms_core::InstallState::Installed | tcms_core::InstallState::Updatable
+            )
+    })
+}
+
+fn info_row(
+    title: &str,
+    subtitle: &str,
+    link: Option<&str>,
+    bridge: &UiBridge,
+) -> libadwaita::ActionRow {
+    let row = libadwaita::ActionRow::builder()
         .title(title)
         .subtitle(subtitle)
-        .build()
+        .build();
+    if let Some(uri) = link.filter(|u| u.starts_with("http://") || u.starts_with("https://")) {
+        row.set_activatable(true);
+        let window = bridge.window.clone();
+        let uri = uri.to_string();
+        row.connect_activated(move |_| {
+            let _ = launch_uri(&window, &uri);
+        });
+        row.add_suffix(&gtk4::Image::from_icon_name("adw-external-link-symbolic"));
+    }
+    row
 }
 
 fn format_size(bytes: u64) -> String {
@@ -241,13 +297,28 @@ fn format_size(bytes: u64) -> String {
 }
 
 fn source_row(pkg: &Package, bridge: &UiBridge) -> libadwaita::ActionRow {
+    let state = if pkg.installed_elsewhere {
+        t("state.available")
+    } else {
+        state_label_local(pkg.state)
+    };
     let row = libadwaita::ActionRow::builder()
         .title(t(pkg.id.source.i18n_key()))
-        .subtitle(&pkg.id.id)
+        .subtitle(format!("{} · {}", pkg.id.id, state))
         .build();
     let btn = package_action_button(pkg, bridge);
     row.add_suffix(&btn);
     row
+}
+
+fn state_label_local(state: tcms_core::InstallState) -> String {
+    match state {
+        tcms_core::InstallState::Available => t("state.available"),
+        tcms_core::InstallState::Installed => t("state.installed"),
+        tcms_core::InstallState::Updatable => t("state.updatable"),
+        tcms_core::InstallState::Installing => t("state.installing"),
+        tcms_core::InstallState::Removing => t("state.removing"),
+    }
 }
 
 fn open_bug_report(bridge: &UiBridge, pkg: &Package) {

@@ -146,6 +146,7 @@ impl FlatpakBackend {
                 homepage: None,
                 size_bytes: None,
                 state,
+                installed_elsewhere: false,
                 categories: Vec::new(),
             });
         }
@@ -268,6 +269,7 @@ impl FlatpakBackend {
                 homepage: None,
                 size_bytes: None,
                 state: InstallState::Available,
+                installed_elsewhere: false,
                 categories: Vec::new(),
             });
 
@@ -330,6 +332,9 @@ impl FlatpakBackend {
             }
             if pkg.is_proprietary.is_none() {
                 pkg.is_proprietary = meta.is_proprietary;
+            }
+            if pkg.size_bytes.is_none() {
+                pkg.size_bytes = meta.size_bytes;
             }
         }
         if pkg.permissions.is_none() {

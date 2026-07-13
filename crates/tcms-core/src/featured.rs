@@ -31,7 +31,7 @@ struct FlathubHit {
 
 #[derive(Debug, Deserialize)]
 struct FlathubApp {
-    #[serde(alias = "app_id", alias = "id")]
+    #[serde(alias = "id")]
     app_id: Option<String>,
     name: Option<String>,
     summary: Option<String>,
@@ -39,6 +39,8 @@ struct FlathubApp {
     icon: Option<String>,
     developer_name: Option<String>,
     project_license: Option<String>,
+    #[serde(default)]
+    is_free_license: Option<bool>,
     #[serde(default)]
     urls: FlathubUrls,
 }
@@ -127,6 +129,7 @@ pub async fn fetch_flathub_collection(
             is_proprietary: license_is_proprietary(license.as_deref()),
             size_bytes: None,
             state: InstallState::Available,
+            installed_elsewhere: false,
             categories: vec!["Flatpak".into()],
         };
         pkg.apply_license_heuristics();
@@ -137,7 +140,8 @@ pub async fn fetch_flathub_collection(
 
 /// Fetch a single Flathub app's rich metadata.
 pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
-    let url = format!("https://flathub.org/api/v2/apps/{app_id}");
+    // Flathub moved app details from /api/v2/apps/{id} to /api/v2/appstream/{id}.
+    let url = format!("https://flathub.org/api/v2/appstream/{app_id}");
     let client = http_client()?;
     let resp = client
         .get(&url)
@@ -168,6 +172,7 @@ pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| summary.clone());
     let license = body.project_license;
+    let size_bytes = fetch_flathub_installed_size(&id).await.ok().flatten();
     let mut pkg = Package {
         id: PackageId::new(PackageSource::Flatpak, &id),
         name,
@@ -187,11 +192,39 @@ pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
         bug_url: body.urls.bugtracker,
         donate_url: body.urls.donation,
         permissions: None,
-        is_proprietary: license_is_proprietary(license.as_deref()),
-        size_bytes: None,
+        is_proprietary: body
+            .is_free_license
+            .map(|is_free| !is_free)
+            .or_else(|| license_is_proprietary(license.as_deref())),
+        size_bytes,
         state: InstallState::Available,
+        installed_elsewhere: false,
         categories: vec!["Flatpak".into()],
     };
     pkg.apply_license_heuristics();
     Ok(pkg)
+}
+
+#[derive(Debug, Deserialize)]
+struct FlathubSummary {
+    installed_size: Option<u64>,
+    download_size: Option<u64>,
+}
+
+async fn fetch_flathub_installed_size(app_id: &str) -> crate::Result<Option<u64>> {
+    let url = format!("https://flathub.org/api/v2/summary/{app_id}");
+    let client = http_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| crate::Error::Message(format!("Flathub summary request failed: {e}")))?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let body: FlathubSummary = resp
+        .json()
+        .await
+        .map_err(|e| crate::Error::Message(format!("Flathub summary parse failed: {e}")))?;
+    Ok(body.installed_size.or(body.download_size))
 }

@@ -18,7 +18,7 @@ jobs:
             gcc gcc-c++ clang make git curl \
             pkgconf-pkg-config \
             gtk4-devel libadwaita-devel \
-            openssl-devel
+            openssl-devel xz-devel
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

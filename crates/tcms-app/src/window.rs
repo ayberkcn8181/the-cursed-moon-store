@@ -6,7 +6,9 @@ use libadwaita::prelude::*;
 use tcms_core::i18n::t;
 
 use crate::icon_loader::IconLoader;
-use crate::pages::{push_detail_page, ExplorePage, InstalledPage, SettingsPage, UpdatesPage};
+use crate::pages::{
+    push_detail_page, CompatibilityPage, ExplorePage, InstalledPage, SettingsPage, UpdatesPage,
+};
 use crate::store::{StoreService, UiBridge};
 
 type ReloadHooks = Rc<RefCell<Vec<Box<dyn Fn()>>>>;
@@ -93,6 +95,7 @@ impl StoreWindow {
         let explore = Rc::new(ExplorePage::new(bridge.clone()));
         let installed = Rc::new(InstalledPage::new(bridge.clone()));
         let updates = Rc::new(UpdatesPage::new(bridge.clone()));
+        let compatibility = Rc::new(CompatibilityPage::new(bridge.clone()));
         let settings = SettingsPage::new(store.clone());
 
         // Ctrl+F focuses Explore search.
@@ -121,6 +124,8 @@ impl StoreWindow {
             hooks.push(Box::new(move || i.reload()));
             let u = updates.clone();
             hooks.push(Box::new(move || u.reload()));
+            let c = compatibility.clone();
+            hooks.push(Box::new(move || c.reload()));
         }
 
         let explore_page = view_stack.add_titled(&explore.root, Some("explore"), &t("nav.explore"));
@@ -130,6 +135,12 @@ impl StoreWindow {
         installed_page.set_icon_name(Some("view-grid-symbolic"));
         let updates_page = view_stack.add_titled(&updates.root, Some("updates"), &t("nav.updates"));
         updates_page.set_icon_name(Some("software-update-available-symbolic"));
+        let compatibility_page = view_stack.add_titled(
+            &compatibility.root,
+            Some("compatibility"),
+            &t("nav.compatibility"),
+        );
+        compatibility_page.set_icon_name(Some("applications-games-symbolic"));
         let settings_page =
             view_stack.add_titled(&settings.root, Some("settings"), &t("nav.settings"));
         settings_page.set_icon_name(Some("emblem-system-symbolic"));
@@ -281,7 +292,7 @@ impl StoreWindow {
         }
 
         window.connect_destroy(move |_| {
-            let _keep = (&explore, &installed, &updates);
+            let _keep = (&explore, &installed, &updates, &compatibility);
         });
 
         Self { window }

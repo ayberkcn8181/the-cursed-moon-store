@@ -126,6 +126,7 @@ impl PacmanBackend {
             homepage: None,
             size_bytes: None,
             state,
+            installed_elsewhere: false,
             categories: app.categories.clone(),
         })
     }
@@ -192,6 +193,7 @@ impl PacmanBackend {
                 homepage: None,
                 size_bytes: None,
                 state,
+                installed_elsewhere: false,
                 categories: Vec::new(),
             });
 
@@ -236,6 +238,7 @@ impl PacmanBackend {
                 } else {
                     InstallState::Available
                 },
+                installed_elsewhere: false,
                 categories: Vec::new(),
             };
             pkg.apply_license_heuristics();
@@ -380,6 +383,7 @@ impl Backend for PacmanBackend {
                 homepage: None,
                 size_bytes: None,
                 state: InstallState::Updatable,
+                installed_elsewhere: false,
                 categories: Vec::new(),
             });
         }
