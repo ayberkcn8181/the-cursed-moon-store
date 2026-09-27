@@ -4,6 +4,8 @@ mod desktop;
 
 use std::collections::{HashMap, HashSet};
 
+static UPDATE_CHECK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 use async_trait::async_trait;
 use tcms_core::process::{run, run_privileged_pacman};
 use tcms_core::{
@@ -95,6 +97,49 @@ impl PacmanBackend {
             }
         }
         Ok(map)
+    }
+
+    /// checkupdates synchronizes a separate database, never the live system database.
+    async fn available_updates(&self) -> Result<HashMap<String, String>> {
+        if !self.pacman_conf.trim().is_empty() && self.pacman_conf != "/etc/pacman.conf" {
+            return Err(Error::Config(
+                "Safe update checks require the system /etc/pacman.conf; checkupdates does not support a custom configuration".into(),
+            ));
+        }
+        let _guard = UPDATE_CHECK.lock().await;
+        let db = dirs::cache_dir()
+            .ok_or_else(|| Error::Config("cannot resolve update-check cache directory".into()))?
+            .join("the-cursed-moon-store/checkupdates");
+        let out = tcms_core::process::run_with_env(
+            "checkupdates",
+            ["--nocolor"],
+            &[("CHECKUPDATES_DB", db.as_os_str())],
+        )
+        .await
+        .map_err(|error| {
+            Error::Command(format!(
+                "Safe update check failed (install pacman-contrib): {error}"
+            ))
+        })?;
+        parse_checkupdates(&out)
+    }
+
+    fn upgrade_args(&self, package: Option<&str>) -> Vec<String> {
+        let mut args = self.conf_args();
+        args.extend(["-Syu".into(), "--noconfirm".into(), "--needed".into()]);
+        args.extend(self.extra_arg_list());
+        if let Some(package) = package {
+            args.extend(["--".into(), package.into()]);
+        }
+        args
+    }
+
+    async fn upgrade_system(&self, package: Option<&str>) -> Result<()> {
+        self.ensure_enabled()?;
+        let args = self.upgrade_args(package);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_privileged_pacman(&refs, "pacman full system upgrade").await?;
+        Ok(())
     }
 
     fn package_from_desktop(
@@ -270,17 +315,8 @@ impl Backend for PacmanBackend {
 
     async fn refresh(&self) -> Result<()> {
         self.ensure_enabled()?;
-        let mut args = self.conf_args();
-        args.push("-Sy".into());
-        // Database sync needs privileges
-        let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
-        match run_privileged_pacman(&str_args, "pacman -Sy").await {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                tracing::warn!(error = %err, "pacman refresh without sync; continuing");
-                Ok(())
-            }
-        }
+        self.available_updates().await?;
+        Ok(())
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResult> {
@@ -350,7 +386,7 @@ impl Backend for PacmanBackend {
 
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
-        let updates = self.query_updates().await?;
+        let updates = self.available_updates().await?;
         let mut packages = Vec::new();
         for (name, new_ver) in updates {
             let mut args = self.conf_args();
@@ -400,15 +436,19 @@ impl Backend for PacmanBackend {
             )));
         }
         tcms_core::assert_safe_package_id(id)?;
-        let mut args = self.conf_args();
-        args.push("-S".into());
-        args.push("--noconfirm".into());
-        args.push("--needed".into());
-        args.extend(self.extra_arg_list());
-        args.push(id.id.clone());
-        let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_privileged_pacman(&str_args, &format!("install {}", id.id)).await?;
-        Ok(())
+        self.upgrade_system(Some(&id.id)).await
+    }
+
+    async fn update(&self, id: &PackageId) -> Result<()> {
+        if id.source != PackageSource::Pacman {
+            return Err(Error::Message(format!("pacman backend cannot update {id}")));
+        }
+        tcms_core::assert_safe_package_id(id)?;
+        self.upgrade_system(None).await
+    }
+
+    async fn update_all(&self) -> Result<()> {
+        self.upgrade_system(None).await
     }
 
     async fn remove(&self, id: &PackageId) -> Result<()> {
@@ -424,11 +464,30 @@ impl Backend for PacmanBackend {
         args.push("-Rns".into());
         args.push("--noconfirm".into());
         args.extend(self.extra_arg_list());
+        args.push("--".into());
         args.push(id.id.clone());
         let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
         run_privileged_pacman(&str_args, &format!("remove {}", id.id)).await?;
         Ok(())
     }
+}
+
+fn parse_checkupdates(out: &tcms_core::process::CommandOutput) -> Result<HashMap<String, String>> {
+    if out.status == 2 {
+        return Ok(HashMap::new());
+    }
+    out.ensure_success("checkupdates")?;
+    let mut updates = HashMap::new();
+    for line in out.stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<_> = line.split_whitespace().collect();
+        if parts.len() != 4 || parts[2] != "->" {
+            return Err(Error::Message(format!(
+                "Unexpected checkupdates output: {line}"
+            )));
+        }
+        updates.insert(parts[0].to_string(), parts[3].to_string());
+    }
+    Ok(updates)
 }
 
 fn parse_qi(stdout: &str) -> (Option<String>, Option<String>) {
@@ -494,6 +553,37 @@ fn parse_package_info(stdout: &str) -> PacmanInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkupdates_distinguishes_empty_results_from_failure() {
+        use tcms_core::process::CommandOutput;
+        let output = |status, stdout: &str| CommandOutput {
+            status,
+            stdout: stdout.into(),
+            stderr: "network failure".into(),
+        };
+        assert!(parse_checkupdates(&output(2, "")).unwrap().is_empty());
+        assert!(parse_checkupdates(&output(1, "")).is_err());
+        assert_eq!(
+            parse_checkupdates(&output(0, "firefox 1 -> 2\n")).unwrap()["firefox"],
+            "2"
+        );
+        assert!(parse_checkupdates(&output(0, "unexpected output")).is_err());
+    }
+
+    #[test]
+    fn installs_and_updates_keep_the_whole_system_consistent() {
+        let backend = PacmanBackend::default();
+        let install = backend.upgrade_args(Some("firefox"));
+        assert_eq!(
+            install,
+            ["-Syu", "--noconfirm", "--needed", "--", "firefox"]
+        );
+        assert_eq!(
+            backend.upgrade_args(None),
+            ["-Syu", "--noconfirm", "--needed"]
+        );
+    }
 
     #[test]
     fn parse_package_info_fields() {

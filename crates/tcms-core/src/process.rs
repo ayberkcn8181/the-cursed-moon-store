@@ -106,6 +106,20 @@ where
     I: IntoIterator,
     I::Item: AsRef<OsStr>,
 {
+    run_with_env(program, args, &[]).await
+}
+
+/// Additional environment is supplied by trusted backend code, never shell text.
+pub async fn run_with_env<S, I>(
+    program: S,
+    args: I,
+    env: &[(&str, &OsStr)],
+) -> Result<CommandOutput>
+where
+    S: AsRef<OsStr>,
+    I: IntoIterator,
+    I::Item: AsRef<OsStr>,
+{
     let mut cmd = Command::new(program.as_ref());
     cmd.args(args)
         .env("LANG", "C")
@@ -114,6 +128,7 @@ where
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     inherit_gui_env(&mut cmd);
+    cmd.envs(env.iter().copied());
 
     let output = cmd
         .output()

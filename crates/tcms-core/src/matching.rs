@@ -91,6 +91,7 @@ fn known_aliases(a: &str, b: &str) -> bool {
 /// Validate a package id/name before privileged operations.
 pub fn is_safe_pkg_token(s: &str) -> bool {
     !s.is_empty()
+        && !s.starts_with('-')
         && s.len() < 256
         && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '+' | '-'))
@@ -144,6 +145,8 @@ mod tests {
         assert!(is_safe_pkg_token("org.mozilla.firefox"));
         assert!(!is_safe_pkg_token("foo;rm"));
         assert!(!is_safe_pkg_token(""));
+        assert!(!is_safe_pkg_token("--help"));
+        assert!(!is_safe_pkg_token("-u"));
     }
 
     #[test]

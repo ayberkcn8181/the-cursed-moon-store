@@ -262,5 +262,14 @@
   "compat.path_heroic_flatpak": "Heroic Flatpak kök dizini",
   "compat.path_native_desc": "Native başlatıcı veri/yapılandırma kökü",
   "compat.path_flatpak_desc": "Flatpak başlatıcı veri/yapılandırma kökü",
-  "compat.save_settings": "Oyun Aracı Ayarlarını Kaydet"
+  "compat.save_settings": "Oyun Aracı Ayarlarını Kaydet",
+  "confirm.system_upgrade_title": "Tam sistem yükseltmesi",
+  "confirm.system_upgrade_body": "Arch sisteminin tutarlı kalması için bu işlem bekleyen tüm sistem paketlerini de yükseltir. Devam etmeden önce Arch güncelleme duyurularını inceleyin.",
+  "updates.check_failed": "Bazı güncelleme kaynakları kontrol edilemedi. Sistem güncel olmayabilir.",
+  "updates.completed_sources": "Tamamlanan kaynaklar: {sources}",
+  "updates.finished": "Güncellemeler tamamlandı",
+  "updates.partial_failure": "Bazı güncellemeler başarısız oldu veya atlandı",
+  "action.close": "Kapat",
+  "transaction.pending": "Çalışan veya sırada bekleyen paket işlemi: {n}",
+  "settings.bg_unavailable": "Arka planda indirme henüz uygulanmadı."
 }

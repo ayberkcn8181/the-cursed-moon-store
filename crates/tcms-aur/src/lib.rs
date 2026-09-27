@@ -138,8 +138,8 @@ impl AurBackend {
     async fn foreign_packages(&self) -> Result<HashMap<String, String>> {
         let out = run("pacman", ["-Qm"]).await?;
         let mut map = HashMap::new();
-        if !out.success() && out.status != 1 {
-            return Ok(map);
+        if !out.success() && (out.status != 1 || !out.stderr.trim().is_empty()) {
+            out.ensure_success("pacman -Qm")?;
         }
         for line in out.stdout.lines() {
             let mut parts = line.split_whitespace();
@@ -163,6 +163,7 @@ impl AurBackend {
         };
         let client = reqwest::Client::builder()
             .user_agent("TheCursedMoonStore/0.1")
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|e| Error::Message(e.to_string()))?;
         let resp = client
@@ -192,6 +193,7 @@ impl AurBackend {
         };
         let client = reqwest::Client::builder()
             .user_agent("TheCursedMoonStore/0.1")
+            .timeout(std::time::Duration::from_secs(20))
             .build()
             .map_err(|e| Error::Message(e.to_string()))?;
 
@@ -207,7 +209,7 @@ impl AurBackend {
                 .await
                 .map_err(|e| Error::Message(format!("AUR info failed: {e}")))?;
             if !resp.status().is_success() {
-                continue;
+                return Err(Error::Message(format!("AUR info HTTP {}", resp.status())));
             }
             let body: AurInfoResponse = resp
                 .json()
@@ -228,7 +230,7 @@ impl AurBackend {
     async fn helper_updates(&self) -> Result<HashMap<String, (String, String)>> {
         let helper = self.resolve_helper().await?;
         let out = run(&helper, ["-Qua", "--color", "never"]).await?;
-        if !out.success() && out.status != 1 {
+        if !out.success() && (out.status != 1 || !out.stderr.trim().is_empty()) {
             out.ensure_success("AUR update query")?;
         }
         Ok(parse_helper_updates(&out.stdout))
@@ -425,12 +427,25 @@ impl Backend for AurBackend {
             Ok(updates) => updates,
             Err(error) => {
                 tracing::warn!(error = %error, "AUR helper update query failed; using RPC fallback");
-                return Ok(self
-                    .installed()
-                    .await?
-                    .into_iter()
-                    .filter(|package| package.state == InstallState::Updatable)
-                    .collect());
+                let foreign = self.foreign_packages().await?;
+                let names: Vec<String> = foreign.keys().cloned().collect();
+                let info = self.rpc_info(&names).await?;
+                let mut packages = Vec::new();
+                for (name, local) in foreign {
+                    let Some(remote) = info.get(&name) else {
+                        continue;
+                    };
+                    let comparison = run("vercmp", [&remote.version, &local]).await?;
+                    comparison.ensure_success("AUR version comparison")?;
+                    if comparison.stdout.trim() == "1" {
+                        packages.push(Self::to_package(
+                            remote,
+                            InstallState::Updatable,
+                            Some(local),
+                        ));
+                    }
+                }
+                return Ok(packages);
             }
         };
         if updates.is_empty() {
@@ -506,6 +521,27 @@ impl Backend for AurBackend {
         let out = run(&helper, &str_args).await?;
         out.ensure_success(&format!("{helper_name} install {}", id.id))?;
         Ok(())
+    }
+
+    async fn update(&self, id: &PackageId) -> Result<()> {
+        self.install(id).await
+    }
+
+    async fn update_all(&self) -> Result<()> {
+        self.ensure_enabled()?;
+        let helper = self.resolve_helper().await?;
+        let mut args = vec!["-Sua".to_string(), "--noconfirm".to_string()];
+        if std::path::Path::new(&helper)
+            .file_name()
+            .is_some_and(|name| name == "paru")
+        {
+            args.push("--skipreview".into());
+        }
+        if let Some(pkexec) = tcms_core::process::pkexec_path() {
+            args.extend(["--sudo".into(), pkexec.to_string_lossy().into_owned()]);
+        }
+        args.extend(self.extra_arg_list());
+        run(&helper, &args).await?.ensure_success("AUR upgrade")
     }
 
     async fn remove(&self, id: &PackageId) -> Result<()> {

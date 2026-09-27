@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use gtk4::prelude::IsA;
 use tcms_aur::AurBackend;
+use tcms_core::transactions::{
+    update_backends, PackageListing, UpdateReport, PACKAGE_TRANSACTIONS,
+};
 use tcms_core::{
     fetch_flathub_collection, packages_match, search_text_for, AppConfig, Backend, FeaturedSection,
     InstallState, Package, PackageAction, PackageId, PackageKind, PackageSource, SearchQuery,
@@ -15,7 +18,6 @@ use tcms_pacman::PacmanBackend;
 pub enum ListKind {
     Explore,
     Installed,
-    Updates,
 }
 
 #[derive(Clone)]
@@ -254,7 +256,9 @@ impl StoreService {
             on_done(pkg_fallback, Vec::new());
             return;
         }
-        poll_local(rx, move |(detailed, alts)| on_done(detailed, alts));
+        poll_local(rx, (pkg_fallback, Vec::new()), move |(detailed, alts)| {
+            on_done(detailed, alts)
+        });
     }
 
     /// Fast cross-source lookup used for install priority (no Flathub enrich / permissions).
@@ -329,14 +333,14 @@ impl StoreService {
             on_done(vec![pkg_fallback]);
             return;
         }
-        poll_local(rx, on_done);
+        poll_local(rx, vec![pkg_fallback], on_done);
     }
 
     pub fn installed(&self) -> Vec<Package> {
         self.filter_catalog(self.collect_installed())
     }
 
-    pub fn updates(&self) -> Vec<Package> {
+    pub fn updates(&self) -> PackageListing {
         // Updates should list everything pacman/Flatpak/AUR report — do not hide
         // system/codec/driver packages behind Explore visibility toggles.
         self.collect_updates()
@@ -437,6 +441,9 @@ impl StoreService {
     }
 
     pub fn refresh_sources(&self) -> Vec<String> {
+        let _transaction = PACKAGE_TRANSACTIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
             let mut errors = Vec::new();
@@ -468,10 +475,17 @@ impl StoreService {
         std::thread::spawn(move || {
             let _ = tx.send(store.refresh_sources());
         });
-        poll_local(rx, on_done);
+        poll_local(
+            rx,
+            vec!["refresh worker stopped unexpectedly".into()],
+            on_done,
+        );
     }
 
     pub fn apply_action(&self, action: PackageAction, id: &PackageId) -> tcms_core::Result<()> {
+        let _transaction = PACKAGE_TRANSACTIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
             match id.source {
@@ -511,37 +525,70 @@ impl StoreService {
             )));
             return;
         }
-        poll_local(rx, on_done);
+        poll_local(
+            rx,
+            Err(tcms_core::Error::Message(
+                "package worker stopped unexpectedly".into(),
+            )),
+            on_done,
+        );
     }
 
     pub fn update_all_async<F>(&self, on_done: F)
     where
-        F: FnOnce(tcms_core::Result<usize>) + 'static,
+        F: FnOnce(UpdateReport) + 'static,
     {
         let store = self.clone();
         let (tx, rx) = mpsc::channel();
         if !spawn_named("tcms-update-all", move || {
-            let updates = store.updates();
-            let mut ok = 0usize;
-            let mut last_err = None;
-            for pkg in updates {
-                match store.apply_action(PackageAction::Update, &pkg.id) {
-                    Ok(()) => ok += 1,
-                    Err(e) => last_err = Some(e),
-                }
-            }
-            let result = match last_err {
-                Some(e) if ok == 0 => Err(e),
-                _ => Ok(ok),
-            };
-            let _ = tx.send(result);
+            let _transaction = PACKAGE_TRANSACTIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let (pacman, flatpak, aur) = store.backends();
+            let report = store
+                .runtime
+                .block_on(update_backends(&[&pacman, &flatpak, &aur]));
+            let _ = tx.send(report);
         }) {
-            on_done(Err(tcms_core::Error::Message(
-                "failed to start update-all thread".into(),
-            )));
+            on_done(UpdateReport {
+                completed: vec![],
+                errors: vec!["failed to start update worker".into()],
+            });
             return;
         }
-        poll_local(rx, on_done);
+        poll_local(
+            rx,
+            UpdateReport {
+                completed: vec![],
+                errors: vec!["update worker stopped unexpectedly".into()],
+            },
+            on_done,
+        );
+    }
+
+    pub fn fetch_updates_async<F>(&self, on_done: F)
+    where
+        F: FnOnce(PackageListing) + 'static,
+    {
+        let store = self.clone();
+        let (tx, rx) = mpsc::channel();
+        if !spawn_named("tcms-check-updates", move || {
+            let _ = tx.send(store.updates());
+        }) {
+            on_done(PackageListing {
+                packages: vec![],
+                errors: vec!["failed to start update check".into()],
+            });
+            return;
+        }
+        poll_local(
+            rx,
+            PackageListing {
+                packages: vec![],
+                errors: vec!["update check stopped unexpectedly".into()],
+            },
+            on_done,
+        );
     }
 
     pub fn fetch_async<F>(&self, kind: ListKind, query: String, on_done: F)
@@ -554,14 +601,13 @@ impl StoreService {
             let packages = match kind {
                 ListKind::Explore => store.explore(&query),
                 ListKind::Installed => store.installed(),
-                ListKind::Updates => store.updates(),
             };
             let _ = tx.send(packages);
         }) {
             on_done(Vec::new());
             return;
         }
-        poll_local(rx, on_done);
+        poll_local(rx, Vec::new(), on_done);
     }
 
     pub fn fetch_featured_async<F>(&self, on_done: F)
@@ -576,7 +622,7 @@ impl StoreService {
             on_done(Vec::new());
             return;
         }
-        poll_local(rx, on_done);
+        poll_local(rx, Vec::new(), on_done);
     }
 
     fn search(&self, query: SearchQuery) -> Vec<Package> {
@@ -660,55 +706,25 @@ impl StoreService {
         })
     }
 
-    fn collect_updates(&self) -> Vec<Package> {
+    fn collect_updates(&self) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
-            let pacman_f = async {
-                if pacman.enabled() {
-                    match pacman.updates().await {
-                        Ok(list) => Some(list),
-                        Err(err) => {
-                            tracing::warn!(error = %err, "pacman updates failed");
-                            None
-                        }
-                    }
-                } else {
-                    None
+            let mut listing = PackageListing::default();
+            for backend in [&pacman as &dyn Backend, &flatpak, &aur] {
+                if !backend.enabled() {
+                    continue;
                 }
-            };
-            let flatpak_f = async {
-                if flatpak.enabled() {
-                    match flatpak.updates().await {
-                        Ok(list) => Some(list),
-                        Err(err) => {
-                            tracing::warn!(error = %err, "flatpak updates failed");
-                            None
-                        }
-                    }
-                } else {
-                    None
+                match backend.updates().await {
+                    Ok(packages) => listing.packages.extend(packages),
+                    Err(error) => listing
+                        .errors
+                        .push(format!("{}: {error}", backend.id().as_str())),
                 }
-            };
-            let aur_f = async {
-                if aur.enabled() {
-                    match aur.updates().await {
-                        Ok(list) => Some(list),
-                        Err(err) => {
-                            tracing::warn!(error = %err, "aur updates failed");
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            };
-            let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
-            let mut packages = Vec::new();
-            for list in [p, f, a].into_iter().flatten() {
-                packages.extend(list);
             }
-            packages.sort_by_key(|a| a.name.to_lowercase());
-            packages
+            listing
+                .packages
+                .sort_by_key(|package| package.name.to_lowercase());
+            listing
         })
     }
 }
@@ -719,12 +735,13 @@ impl Default for StoreService {
     }
 }
 
-fn poll_local<T, F>(rx: mpsc::Receiver<T>, on_done: F)
+fn poll_local<T, F>(rx: mpsc::Receiver<T>, fallback: T, on_done: F)
 where
     T: 'static,
     F: FnOnce(T) + 'static,
 {
     let mut on_done = Some(on_done);
+    let mut fallback = Some(fallback);
     glib::timeout_add_local(Duration::from_millis(50), move || match rx.try_recv() {
         Ok(value) => {
             if let Some(cb) = on_done.take() {
@@ -733,7 +750,12 @@ where
             glib::ControlFlow::Break
         }
         Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-        Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            if let (Some(cb), Some(value)) = (on_done.take(), fallback.take()) {
+                cb(value);
+            }
+            glib::ControlFlow::Break
+        }
     });
 }
 
@@ -761,6 +783,7 @@ pub struct UiBridge {
     pub busy: Rc<std::cell::RefCell<std::collections::HashSet<PackageId>>>,
     /// Shown while a package transaction is running.
     pub activity: libadwaita::Banner,
+    pub pending_transactions: Rc<std::cell::Cell<usize>>,
 }
 
 impl UiBridge {
@@ -774,17 +797,44 @@ impl UiBridge {
                 self.activity.set_title(msg);
                 self.activity.set_revealed(true);
             }
+            None if self.pending_transactions.get() > 0 => {
+                self.activity.set_title(&tcms_core::i18n::t_args(
+                    "transaction.pending",
+                    &[("n", &self.pending_transactions.get().to_string())],
+                ));
+                self.activity.set_revealed(true);
+            }
             None => self.activity.set_revealed(false),
         }
+    }
+
+    pub fn package_started(&self, message: &str) {
+        self.pending_transactions
+            .set(self.pending_transactions.get() + 1);
+        if self.pending_transactions.get() == 1 {
+            self.set_activity(Some(message));
+        } else {
+            self.set_activity(None);
+        }
+    }
+
+    pub fn package_finished(&self) {
+        self.pending_transactions
+            .set(self.pending_transactions.get().saturating_sub(1));
+        self.set_activity(None);
     }
 
     pub fn open_package(&self, pkg: &Package) {
         (self.open_detail)(pkg.clone());
     }
 
-    pub fn run_action(&self, action: PackageAction, pkg: &Package) {
+    pub fn run_action(&self, action: PackageAction, pkg: &Package, button: &gtk4::Button) {
+        use gtk4::prelude::WidgetExt;
+        button.set_sensitive(false);
+        let button = button.clone();
+        let done: Rc<dyn Fn()> = Rc::new(move || button.set_sensitive(true));
         if action == PackageAction::Remove {
-            self.confirm_remove(pkg);
+            self.confirm_remove(pkg, done);
             return;
         }
 
@@ -796,21 +846,21 @@ impl UiBridge {
             if ask {
                 bridge.toast_msg(&tcms_core::i18n::t("install.resolving"));
                 store.install_candidates_async(pkg, move |candidates| {
-                    bridge.prompt_install_source_with(candidates);
+                    bridge.prompt_install_source_with(candidates, done.clone());
                 });
                 return;
             }
             // Install exactly the package the user clicked (source preserved).
             // Source priority only reorders the chooser when "ask repo" is enabled,
             // and ranks search results — it must not silently redirect installs.
-            bridge.execute_action(PackageAction::Install, &pkg);
+            bridge.confirm_system_action(PackageAction::Install, &pkg, done);
             return;
         }
 
-        self.execute_action(action, pkg);
+        self.confirm_system_action(action, pkg, done);
     }
 
-    fn confirm_remove(&self, pkg: &Package) {
+    fn confirm_remove(&self, pkg: &Package, done: Rc<dyn Fn()>) {
         use libadwaita::prelude::*;
         use tcms_core::i18n::{t, t_args};
 
@@ -828,17 +878,47 @@ impl UiBridge {
         let pkg = pkg.clone();
         dialog.connect_response(None, move |_, response| {
             if response == "remove" {
-                bridge.execute_action(PackageAction::Remove, &pkg);
+                bridge.execute_action(PackageAction::Remove, &pkg, done.clone());
+            } else {
+                done();
             }
         });
         dialog.present(Some(&self.window));
     }
 
-    fn execute_action(&self, action: PackageAction, pkg: &Package) {
+    fn confirm_system_action(&self, action: PackageAction, pkg: &Package, done: Rc<dyn Fn()>) {
+        use libadwaita::prelude::*;
+        use tcms_core::i18n::t;
+        if pkg.id.source != PackageSource::Pacman {
+            self.execute_action(action, pkg, done);
+            return;
+        }
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading(t("confirm.system_upgrade_title"))
+            .body(t("confirm.system_upgrade_body"))
+            .build();
+        dialog.add_response("cancel", &t("action.cancel"));
+        dialog.add_response("continue", &t("action.update"));
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        let bridge = self.clone();
+        let pkg = pkg.clone();
+        dialog.connect_response(None, move |_, response| {
+            if response == "continue" {
+                bridge.execute_action(action, &pkg, done.clone());
+            } else {
+                done();
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    fn execute_action(&self, action: PackageAction, pkg: &Package, done: Rc<dyn Fn()>) {
         use tcms_core::i18n::t_args;
 
         if !self.busy.borrow_mut().insert(pkg.id.clone()) {
             self.toast_msg(&t_args("toast.busy", &[("name", &pkg.name)]));
+            done();
             return;
         }
 
@@ -849,7 +929,7 @@ impl UiBridge {
             PackageAction::Update => "toast.updating",
         };
         let activity_msg = t_args(start_key, &[("name", &name)]);
-        self.set_activity(Some(&activity_msg));
+        self.package_started(&activity_msg);
         self.toast_msg(&activity_msg);
 
         let bridge = self.clone();
@@ -858,7 +938,8 @@ impl UiBridge {
         self.store
             .apply_action_async(action, pkg.id.clone(), move |result| {
                 bridge.busy.borrow_mut().remove(&pkg_id);
-                bridge.set_activity(None);
+                bridge.package_finished();
+                done();
                 match result {
                     Ok(()) => {
                         if action == PackageAction::Install {
@@ -890,15 +971,16 @@ impl UiBridge {
         self.toast.add_toast(toast);
     }
 
-    fn prompt_install_source_with(&self, candidates: Vec<Package>) {
+    fn prompt_install_source_with(&self, candidates: Vec<Package>, done: Rc<dyn Fn()>) {
         use libadwaita::prelude::*;
         use tcms_core::i18n::t;
 
         if candidates.is_empty() {
+            done();
             return;
         }
         if candidates.len() == 1 {
-            self.execute_action(PackageAction::Install, &candidates[0]);
+            self.confirm_system_action(PackageAction::Install, &candidates[0], done);
             return;
         }
 
@@ -923,13 +1005,16 @@ impl UiBridge {
         let candidates = candidates.clone();
         dialog.connect_response(None, move |_, response| {
             if response == "cancel" {
+                done();
                 return;
             }
             if let Ok(idx) = response.parse::<usize>() {
                 if let Some(pkg) = candidates.get(idx) {
-                    bridge.execute_action(PackageAction::Install, pkg);
+                    bridge.confirm_system_action(PackageAction::Install, pkg, done.clone());
+                    return;
                 }
             }
+            done();
         });
         dialog.present(Some(&self.window));
     }
@@ -967,5 +1052,30 @@ pub fn launch_package(pkg: &Package, parent: &impl IsA<gtk4::Window>) -> bool {
             }
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn worker_disconnect_completes_callback_instead_of_leaving_ui_busy() {
+        let context = glib::MainContext::default();
+        let _guard = context.acquire().unwrap();
+        let (tx, rx) = mpsc::channel::<Result<(), String>>();
+        drop(tx);
+        let completed = Rc::new(RefCell::new(None));
+        let result = completed.clone();
+        poll_local(rx, Err("worker stopped".into()), move |value| {
+            *result.borrow_mut() = Some(value);
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while completed.borrow().is_none() && std::time::Instant::now() < deadline {
+            context.iteration(false);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*completed.borrow(), Some(Err("worker stopped".into())));
     }
 }
