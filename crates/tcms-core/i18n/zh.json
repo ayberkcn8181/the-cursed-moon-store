@@ -271,5 +271,9 @@
   "updates.partial_failure": "Some updates failed or were skipped",
   "action.close": "Close",
   "transaction.pending": "{n} package operations running or queued",
-  "settings.bg_unavailable": "Background downloads are not implemented yet."
+  "settings.bg_unavailable": "Background downloads are not implemented yet.",
+  "catalog.load_failed": "Some software sources could not be loaded. Available results are shown below.",
+  "launch.failed": "The application could not be launched",
+  "transaction.output": "Transaction output",
+  "transaction.queued": "Waiting for another package operation…"
 }

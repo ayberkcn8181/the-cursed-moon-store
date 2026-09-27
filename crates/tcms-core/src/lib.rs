@@ -23,8 +23,12 @@ pub use icons::{cached_icon_path_if_exists, ensure_cached_icon, icon_cache_dir, 
 pub use matching::{
     assert_safe_package_id, is_safe_pkg_token, normalize_app_key, packages_match, search_text_for,
 };
-pub use package::{license_is_proprietary, InstallState, Package, PackageId, PackageSource};
+pub use package::{
+    license_is_proprietary, FlatpakInstallation, FlatpakRef, InstallState, Package, PackageId,
+    PackageSource,
+};
 pub use process::{
     pkexec_path, resolve_program, run, run_checked, run_privileged, run_privileged_pacman,
 };
 pub use util::urlencoding;
+pub mod cache;

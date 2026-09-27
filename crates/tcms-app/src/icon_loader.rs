@@ -83,25 +83,21 @@ impl IconLoader {
         let runtime = self.runtime.clone();
         let url_for_thread = url.clone();
         let (tx, rx) = mpsc::channel();
-        if std::thread::Builder::new()
-            .name("tcms-icon".into())
-            .spawn(move || {
-                let path = runtime.block_on(ensure_cached_icon(&url_for_thread)).ok();
-                let _ = tx.send((url_for_thread, path));
-            })
-            .is_err()
-        {
-            self.finish(&url, None);
-            return;
-        }
-
+        runtime.spawn(async move {
+            let path = ensure_cached_icon(&url_for_thread).await.ok();
+            let _ = tx.send((url_for_thread, path));
+        });
+        let disconnected_url = url;
         glib::timeout_add_local(Duration::from_millis(100), move || match rx.try_recv() {
             Ok((url, path)) => {
                 loader.finish(&url, path);
                 glib::ControlFlow::Break
             }
             Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-            Err(_) => glib::ControlFlow::Break,
+            Err(_) => {
+                loader.finish(&disconnected_url, None);
+                glib::ControlFlow::Break
+            }
         });
     }
 

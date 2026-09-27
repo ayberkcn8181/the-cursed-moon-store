@@ -1,6 +1,6 @@
 //! Pacman (official / system repo) backend.
 
-mod desktop;
+pub mod desktop;
 
 use std::collections::{HashMap, HashSet};
 
@@ -161,6 +161,7 @@ impl PacmanBackend {
             available_version: updates.get(pkg_name).cloned(),
             icon_name: app.icon.clone(),
             icon_url: None,
+            desktop_id: Some(app.desktop_id.clone()),
             publisher: None,
             bug_url: None,
             donate_url: None,
@@ -183,10 +184,10 @@ impl PacmanBackend {
         // Avoid pacman -Qu / per-package -Q on every keystroke — trust [installed] markers.
         let mut args = self.conf_args();
         args.push("-Ss".into());
-        args.push(text.into());
+        args.extend(["--".into(), text.into()]);
         let out = run("pacman", &args).await?;
-        if !out.success() && out.status != 1 {
-            return Ok(Vec::new());
+        if !out.success() && (out.status != 1 || !out.stderr.trim().is_empty()) {
+            out.ensure_success("pacman search")?;
         }
 
         let mut packages = Vec::new();
@@ -228,6 +229,7 @@ impl PacmanBackend {
                 available_version: None,
                 icon_name: Some("package-x-generic".into()),
                 icon_url: None,
+                desktop_id: None,
                 publisher: None,
                 bug_url: None,
                 donate_url: None,
@@ -269,6 +271,7 @@ impl PacmanBackend {
                 available_version: None,
                 icon_name: Some("package-x-generic".into()),
                 icon_url: None,
+                desktop_id: None,
                 publisher: info.packager.clone(),
                 bug_url: None,
                 donate_url: None,
@@ -409,6 +412,7 @@ impl Backend for PacmanBackend {
                 available_version: Some(new_ver),
                 icon_name: Some("package-x-generic".into()),
                 icon_url: None,
+                desktop_id: None,
                 publisher: None,
                 bug_url: None,
                 donate_url: None,

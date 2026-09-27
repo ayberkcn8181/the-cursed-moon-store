@@ -271,5 +271,9 @@
   "updates.partial_failure": "Bazı güncellemeler başarısız oldu veya atlandı",
   "action.close": "Kapat",
   "transaction.pending": "Çalışan veya sırada bekleyen paket işlemi: {n}",
-  "settings.bg_unavailable": "Arka planda indirme henüz uygulanmadı."
+  "settings.bg_unavailable": "Arka planda indirme henüz uygulanmadı.",
+  "catalog.load_failed": "Bazı yazılım kaynakları yüklenemedi. Erişilebilen sonuçlar aşağıda gösteriliyor.",
+  "launch.failed": "Uygulama başlatılamadı",
+  "transaction.output": "İşlem çıktısı",
+  "transaction.queued": "Diğer paket işleminin tamamlanması bekleniyor…"
 }

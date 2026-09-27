@@ -30,3 +30,16 @@ jobs:
         run: cargo test --workspace
       - name: Build
         run: cargo build -p tcms-app
+
+  arch-smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install Arch build tools
+        run: pacman -Syu --noconfirm --needed rust git
+      - uses: actions/checkout@v4
+      - name: Real pacman fixture in isolated root
+        env:
+          TCMS_ARCH_SMOKE: '1'
+        run: cargo test --locked -p tcms-pacman --test arch_smoke -- --ignored --nocapture

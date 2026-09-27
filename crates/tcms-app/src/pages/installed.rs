@@ -10,6 +10,7 @@ pub struct InstalledPage {
     pub root: GtkBox,
     list_host: GtkBox,
     bridge: UiBridge,
+    request_id: std::rc::Rc<std::cell::Cell<u64>>,
 }
 
 impl InstalledPage {
@@ -22,6 +23,7 @@ impl InstalledPage {
             root,
             list_host,
             bridge,
+            request_id: Default::default(),
         };
         page.reload();
         page
@@ -40,11 +42,22 @@ impl InstalledPage {
 
         let list_host = self.list_host.clone();
         let bridge = self.bridge.clone();
+        let request_id = self.request_id.clone();
+        let id = request_id.get() + 1;
+        request_id.set(id);
         self.bridge
             .store
-            .fetch_async(ListKind::Installed, String::new(), move |packages| {
+            .fetch_async(ListKind::Installed, String::new(), move |listing| {
+                if request_id.get() != id {
+                    return;
+                }
                 while let Some(child) = list_host.first_child() {
                     list_host.remove(&child);
+                }
+                crate::widgets::append_listing_errors(&list_host, &listing.errors);
+                let packages = listing.packages;
+                if packages.is_empty() && !listing.errors.is_empty() {
+                    return;
                 }
                 if packages.is_empty() {
                     let empty = libadwaita::StatusPage::builder()

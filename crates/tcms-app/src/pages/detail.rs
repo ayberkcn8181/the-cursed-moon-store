@@ -116,9 +116,9 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
             .css_classes(["pill"])
             .build();
         let pkg_open = installed.clone();
-        let win = bridge.window.clone();
+        let bridge_open = bridge.clone();
         open_btn.connect_clicked(move |_| {
-            let _ = crate::store::launch_package(&pkg_open, &win);
+            bridge_open.launch_installed(&pkg_open);
         });
         actions.append(&open_btn);
     }
@@ -304,7 +304,7 @@ fn source_row(pkg: &Package, bridge: &UiBridge) -> libadwaita::ActionRow {
     };
     let row = libadwaita::ActionRow::builder()
         .title(t(pkg.id.source.i18n_key()))
-        .subtitle(format!("{} · {}", pkg.id.id, state))
+        .subtitle(format!("{} · {}", pkg.id.display_ref(), state))
         .build();
     let btn = package_action_button(pkg, bridge);
     row.add_suffix(&btn);

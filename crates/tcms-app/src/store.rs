@@ -2,7 +2,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
-use gtk4::prelude::IsA;
+use gtk4::prelude::*;
 use tcms_aur::AurBackend;
 use tcms_core::transactions::{
     update_backends, PackageListing, UpdateReport, PACKAGE_TRANSACTIONS,
@@ -24,6 +24,7 @@ pub enum ListKind {
 pub struct StoreService {
     inner: Arc<std::sync::Mutex<StoreInner>>,
     runtime: Arc<tokio::runtime::Runtime>,
+    installed_cache: Arc<tcms_core::cache::SnapshotCache<PackageListing>>,
 }
 
 struct StoreInner {
@@ -65,6 +66,9 @@ impl StoreService {
                 aur,
             })),
             runtime: Arc::new(runtime),
+            installed_cache: Arc::new(tcms_core::cache::SnapshotCache::new(Duration::from_secs(
+                30,
+            ))),
         }
     }
 
@@ -120,6 +124,7 @@ impl StoreService {
                 .aur
                 .set_extra_args(config.advanced.aur_extra_args.clone());
             inner.config = config;
+            self.installed_cache.invalidate();
             Ok(())
         })
     }
@@ -130,23 +135,23 @@ impl StoreService {
         packages
     }
 
-    pub fn explore(&self, text: &str) -> Vec<Package> {
+    pub fn explore(&self, text: &str) -> PackageListing {
         if text.trim().is_empty() {
-            return Vec::new();
+            return PackageListing::default();
         }
-        let mut packages = self.filter_catalog(self.search(SearchQuery {
+        let mut listing = self.search(SearchQuery {
             text: text.to_string(),
             ..Default::default()
-        }));
-        self.annotate_install_states(&mut packages);
-        let priority = self.config().advanced.clone();
-        packages.sort_by(|a, b| {
-            priority
-                .priority_rank(a.id.source)
-                .cmp(&priority.priority_rank(b.id.source))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
-        packages
+        listing.packages = self.filter_catalog(listing.packages);
+        listing
+            .errors
+            .extend(self.annotate_install_states(&mut listing.packages));
+        let priority = self.config().advanced.clone();
+        listing
+            .packages
+            .sort_by_key(|p| (priority.priority_rank(p.id.source), p.name.to_lowercase()));
+        listing
     }
 
     /// Rich package details for the detail page, plus alternate sources.
@@ -302,7 +307,10 @@ impl StoreService {
             for list in [p, f, a] {
                 let Some(list) = list else { continue };
                 for candidate in list {
-                    if packages_match(pkg, &candidate)
+                    if (packages_match(pkg, &candidate)
+                        || (pkg.id.source == PackageSource::Flatpak
+                            && candidate.id.source == PackageSource::Flatpak
+                            && pkg.id.id == candidate.id.id))
                         && !candidates.iter().any(|c| c.id == candidate.id)
                     {
                         candidates.push(candidate);
@@ -336,8 +344,10 @@ impl StoreService {
         poll_local(rx, vec![pkg_fallback], on_done);
     }
 
-    pub fn installed(&self) -> Vec<Package> {
-        self.filter_catalog(self.collect_installed())
+    pub fn installed(&self) -> PackageListing {
+        let mut listing = self.collect_installed();
+        listing.packages = self.filter_catalog(listing.packages);
+        listing
     }
 
     pub fn updates(&self) -> PackageListing {
@@ -387,7 +397,7 @@ impl StoreService {
 
         // When Flatpak is off or Flathub is unreachable, spotlight local installed apps.
         if sections.is_empty() && config.enable_pacman {
-            let mut installed = self.installed();
+            let mut installed = self.installed().packages;
             installed.retain(|p| p.kind() == PackageKind::App);
             installed.truncate(12);
             if !installed.is_empty() {
@@ -399,7 +409,15 @@ impl StoreService {
             }
         }
 
+        let (_, flatpak, _) = self.backends();
         for section in &mut sections {
+            for pkg in &mut section.packages {
+                if pkg.id.source == PackageSource::Flatpak && pkg.id.flatpak.is_none() {
+                    if let Ok(id) = self.runtime.block_on(flatpak.catalog_id(&pkg.id.id)) {
+                        pkg.id = id;
+                    }
+                }
+            }
             self.annotate_install_states(&mut section.packages);
         }
         sections
@@ -407,14 +425,19 @@ impl StoreService {
 
     /// Mark packages that are already installed, including cross-source matches
     /// (e.g. pacman Firefox makes Flathub Firefox show as installed in lists).
-    fn annotate_install_states(&self, packages: &mut [Package]) {
+    fn annotate_install_states(&self, packages: &mut [Package]) -> Vec<String> {
         if packages.is_empty() {
-            return;
+            return Vec::new();
         }
-        let installed = self.collect_installed();
+        let listing = self.collect_installed();
+        let installed = listing.packages;
+        let exact: std::collections::HashMap<_, _> = installed.iter().map(|p| (&p.id, p)).collect();
         for pkg in packages.iter_mut() {
-            if let Some(exact) = installed.iter().find(|candidate| candidate.id == pkg.id) {
-                pkg.state = exact.state;
+            if let Some(exact) = exact.get(&pkg.id) {
+                pkg.desktop_id = exact.desktop_id.clone();
+                if pkg.state != InstallState::Updatable {
+                    pkg.state = exact.state;
+                }
                 pkg.installed_elsewhere = false;
                 if pkg.available_version.is_none() {
                     pkg.available_version = exact.available_version.clone();
@@ -438,6 +461,7 @@ impl StoreService {
                 pkg.installed_elsewhere = true;
             }
         }
+        listing.errors
     }
 
     pub fn refresh_sources(&self) -> Vec<String> {
@@ -445,7 +469,7 @@ impl StoreService {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let (pacman, flatpak, aur) = self.backends();
-        self.runtime.block_on(async {
+        let errors = self.runtime.block_on(async {
             let mut errors = Vec::new();
             if pacman.enabled() {
                 if let Err(e) = pacman.refresh().await {
@@ -463,7 +487,9 @@ impl StoreService {
                 }
             }
             errors
-        })
+        });
+        self.installed_cache.invalidate();
+        errors
     }
 
     pub fn refresh_async<F>(&self, on_done: F)
@@ -482,43 +508,65 @@ impl StoreService {
         );
     }
 
-    pub fn apply_action(&self, action: PackageAction, id: &PackageId) -> tcms_core::Result<()> {
+    pub fn apply_action(
+        &self,
+        action: PackageAction,
+        id: &PackageId,
+        progress: mpsc::SyncSender<String>,
+    ) -> tcms_core::Result<()> {
+        let _ = progress.try_send(tcms_core::i18n::t("transaction.queued"));
         let _transaction = PACKAGE_TRANSACTIONS
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let (pacman, flatpak, aur) = self.backends();
-        self.runtime.block_on(async {
-            match id.source {
-                PackageSource::Pacman => {
-                    if !pacman.enabled() {
-                        return Err(tcms_core::Error::BackendDisabled("pacman".into()));
+        let result = self
+            .runtime
+            .block_on(tcms_core::process::with_progress(progress, async {
+                tcms_core::process::report_progress(&format!(
+                    "\n=== {:?}: {} ===\n",
+                    action,
+                    id.display_ref()
+                ));
+                match id.source {
+                    PackageSource::Pacman => {
+                        if !pacman.enabled() {
+                            return Err(tcms_core::Error::BackendDisabled("pacman".into()));
+                        }
+                        pacman.apply(action, id).await
                     }
-                    pacman.apply(action, id).await
-                }
-                PackageSource::Flatpak => {
-                    if !flatpak.enabled() {
-                        return Err(tcms_core::Error::BackendDisabled("flatpak".into()));
+                    PackageSource::Flatpak => {
+                        if !flatpak.enabled() {
+                            return Err(tcms_core::Error::BackendDisabled("flatpak".into()));
+                        }
+                        flatpak.apply(action, id).await
                     }
-                    flatpak.apply(action, id).await
-                }
-                PackageSource::Aur => {
-                    if !aur.enabled() {
-                        return Err(tcms_core::Error::BackendDisabled("aur".into()));
+                    PackageSource::Aur => {
+                        if !aur.enabled() {
+                            return Err(tcms_core::Error::BackendDisabled("aur".into()));
+                        }
+                        aur.apply(action, id).await
                     }
-                    aur.apply(action, id).await
                 }
-            }
-        })
+            }));
+        self.installed_cache.invalidate();
+        result
     }
 
-    pub fn apply_action_async<F>(&self, action: PackageAction, id: PackageId, on_done: F)
-    where
+    pub fn apply_action_async<F>(
+        &self,
+        action: PackageAction,
+        id: PackageId,
+        on_progress: impl Fn(String) + 'static,
+        on_done: F,
+    ) where
         F: FnOnce(tcms_core::Result<()>) + 'static,
     {
         let store = self.clone();
         let (tx, rx) = mpsc::channel();
+        let (progress, progress_rx) = mpsc::sync_channel(64);
+        poll_progress(progress_rx, on_progress);
         if !spawn_named("tcms-pkg-op", move || {
-            let _ = tx.send(store.apply_action(action, &id));
+            let _ = tx.send(store.apply_action(action, &id, progress));
         }) {
             on_done(Err(tcms_core::Error::Message(
                 "failed to start package operation thread".into(),
@@ -534,20 +582,25 @@ impl StoreService {
         );
     }
 
-    pub fn update_all_async<F>(&self, on_done: F)
+    pub fn update_all_async<F>(&self, on_progress: impl Fn(String) + 'static, on_done: F)
     where
         F: FnOnce(UpdateReport) + 'static,
     {
         let store = self.clone();
         let (tx, rx) = mpsc::channel();
+        let (progress, progress_rx) = mpsc::sync_channel(64);
+        poll_progress(progress_rx, on_progress);
         if !spawn_named("tcms-update-all", move || {
+            let _ = progress.try_send(tcms_core::i18n::t("transaction.queued"));
             let _transaction = PACKAGE_TRANSACTIONS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let (pacman, flatpak, aur) = store.backends();
-            let report = store
-                .runtime
-                .block_on(update_backends(&[&pacman, &flatpak, &aur]));
+            let report = store.runtime.block_on(tcms_core::process::with_progress(
+                progress,
+                update_backends(&[&pacman, &flatpak, &aur]),
+            ));
+            store.installed_cache.invalidate();
             let _ = tx.send(report);
         }) {
             on_done(UpdateReport {
@@ -593,7 +646,7 @@ impl StoreService {
 
     pub fn fetch_async<F>(&self, kind: ListKind, query: String, on_done: F)
     where
-        F: FnOnce(Vec<Package>) + 'static,
+        F: FnOnce(PackageListing) + 'static,
     {
         let store = self.clone();
         let (tx, rx) = mpsc::channel();
@@ -604,10 +657,20 @@ impl StoreService {
             };
             let _ = tx.send(packages);
         }) {
-            on_done(Vec::new());
+            on_done(PackageListing {
+                packages: vec![],
+                errors: vec!["could not start catalog worker".into()],
+            });
             return;
         }
-        poll_local(rx, Vec::new(), on_done);
+        poll_local(
+            rx,
+            PackageListing {
+                packages: vec![],
+                errors: vec!["catalog worker stopped unexpectedly".into()],
+            },
+            on_done,
+        );
     }
 
     pub fn fetch_featured_async<F>(&self, on_done: F)
@@ -625,84 +688,85 @@ impl StoreService {
         poll_local(rx, Vec::new(), on_done);
     }
 
-    fn search(&self, query: SearchQuery) -> Vec<Package> {
+    fn search(&self, query: SearchQuery) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
-            let pacman_f = async {
-                if pacman.enabled() {
-                    pacman.search(&query).await.ok().map(|r| r.packages)
-                } else {
-                    None
-                }
-            };
-            let flatpak_f = async {
-                if flatpak.enabled() {
-                    flatpak.search(&query).await.ok().map(|r| r.packages)
-                } else {
-                    None
-                }
-            };
-            let aur_f = async {
-                if aur.enabled() {
-                    aur.search(&query).await.ok().map(|r| r.packages)
-                } else {
-                    None
-                }
-            };
-            let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
-            let mut packages = Vec::new();
-            for list in [p, f, a].into_iter().flatten() {
-                packages.extend(list);
-            }
-            packages
+            let (p, f, a) = tokio::join!(
+                async {
+                    if pacman.enabled() {
+                        Some(pacman.search(&query).await.map(|r| r.packages))
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if flatpak.enabled() {
+                        Some(flatpak.search(&query).await.map(|r| r.packages))
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if aur.enabled() {
+                        Some(aur.search(&query).await.map(|r| r.packages))
+                    } else {
+                        None
+                    }
+                },
+            );
+            collect_results([("pacman", p), ("flatpak", f), ("aur", a)])
         })
     }
 
-    fn collect_installed(&self) -> Vec<Package> {
+    fn collect_installed(&self) -> PackageListing {
+        self.installed_cache.get_or_load(
+            || self.load_installed(),
+            |listing| listing.errors.is_empty(),
+        )
+    }
+
+    fn load_installed(&self) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
-            let pacman_f = async {
-                if pacman.enabled() {
-                    pacman.installed().await.ok()
-                } else {
-                    None
+            let (mut p, f, a) = tokio::join!(
+                async {
+                    if pacman.enabled() {
+                        Some(pacman.installed().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if flatpak.enabled() {
+                        Some(flatpak.installed().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if aur.enabled() {
+                        Some(aur.installed().await)
+                    } else {
+                        None
+                    }
+                },
+            );
+            if let Some(Ok(aur_packages)) = &a {
+                let names: std::collections::HashSet<_> =
+                    aur_packages.iter().map(|p| p.id.id.as_str()).collect();
+                if let Some(Ok(desktop_packages)) = &mut p {
+                    for pkg in desktop_packages {
+                        if names.contains(pkg.id.id.as_str()) {
+                            pkg.id.source = PackageSource::Aur;
+                        }
+                    }
                 }
-            };
-            let flatpak_f = async {
-                if flatpak.enabled() {
-                    flatpak.installed().await.ok()
-                } else {
-                    None
-                }
-            };
-            let aur_f = async {
-                if aur.enabled() {
-                    aur.installed().await.ok()
-                } else {
-                    None
-                }
-            };
-            let (p, f, a) = tokio::join!(pacman_f, flatpak_f, aur_f);
-            let mut packages = Vec::new();
-            for list in [p, f, a].into_iter().flatten() {
-                packages.extend(list);
             }
+            let mut listing = collect_results([("pacman", p), ("flatpak", f), ("aur", a)]);
             let mut seen = std::collections::HashSet::new();
-            packages.sort_by(|a, b| {
-                let rank = |p: &Package| match p.id.source {
-                    PackageSource::Flatpak => 0,
-                    PackageSource::Pacman => 1,
-                    PackageSource::Aur => 2,
-                };
-                rank(a)
-                    .cmp(&rank(b))
-                    .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-            });
-            // Deduplicate by full PackageId (source + id), not bare name —
-            // the same app can legitimately exist in pacman and Flatpak.
-            packages.retain(|p| seen.insert(p.id.clone()));
-            packages.sort_by_key(|a| a.name.to_lowercase());
-            packages
+            listing.packages.retain(|p| seen.insert(p.id.clone()));
+            listing.packages.sort_by_key(|p| p.name.to_lowercase());
+            listing
         })
     }
 
@@ -729,10 +793,38 @@ impl StoreService {
     }
 }
 
+fn collect_results<const N: usize>(
+    results: [(&str, Option<tcms_core::Result<Vec<Package>>>); N],
+) -> PackageListing {
+    let mut listing = PackageListing::default();
+    for (source, result) in results {
+        match result {
+            Some(Ok(packages)) => listing.packages.extend(packages),
+            Some(Err(error)) => listing.errors.push(format!("{source}: {error}")),
+            None => {}
+        }
+    }
+    listing
+}
+
 impl Default for StoreService {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn poll_progress(rx: mpsc::Receiver<String>, on_progress: impl Fn(String) + 'static) {
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        // A bounded amount of work per GTK tick, even for verbose builds.
+        for _ in 0..16 {
+            match rx.try_recv() {
+                Ok(text) => on_progress(text),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return glib::ControlFlow::Break,
+            }
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 fn poll_local<T, F>(rx: mpsc::Receiver<T>, fallback: T, on_done: F)
@@ -783,6 +875,7 @@ pub struct UiBridge {
     pub busy: Rc<std::cell::RefCell<std::collections::HashSet<PackageId>>>,
     /// Shown while a package transaction is running.
     pub activity: libadwaita::Banner,
+    pub transaction_log: gtk4::TextBuffer,
     pub pending_transactions: Rc<std::cell::Cell<usize>>,
 }
 
@@ -808,6 +901,15 @@ impl UiBridge {
         }
     }
 
+    pub fn append_progress(&self, text: String) {
+        let buffer = &self.transaction_log;
+        buffer.insert(&mut buffer.end_iter(), &text);
+        let excess = buffer.char_count() - 64_000;
+        if excess > 0 {
+            buffer.delete(&mut buffer.start_iter(), &mut buffer.iter_at_offset(excess));
+        }
+    }
+
     pub fn package_started(&self, message: &str) {
         self.pending_transactions
             .set(self.pending_transactions.get() + 1);
@@ -822,6 +924,38 @@ impl UiBridge {
         self.pending_transactions
             .set(self.pending_transactions.get().saturating_sub(1));
         self.set_activity(None);
+    }
+
+    pub fn launch_installed(&self, pkg: &Package) {
+        let wanted = pkg.clone();
+        let bridge = self.clone();
+        self.store
+            .fetch_async(ListKind::Installed, String::new(), move |listing| {
+                let target = listing
+                    .packages
+                    .iter()
+                    .find(|p| p.id == wanted.id)
+                    .or_else(|| listing.packages.iter().find(|p| packages_match(&wanted, p)));
+                let exit_bridge = bridge.clone();
+                match target.and_then(|p| {
+                    launch_package(p, move |result| {
+                        if let Err(error) = result {
+                            exit_bridge.toast_msg(&format!(
+                                "{}: {error}",
+                                tcms_core::i18n::t("launch.failed")
+                            ));
+                        }
+                    })
+                    .err()
+                }) {
+                    Some(error) => bridge
+                        .toast_msg(&format!("{}: {error}", tcms_core::i18n::t("launch.failed"))),
+                    None if target.is_none() => {
+                        bridge.toast_msg(&tcms_core::i18n::t("launch.failed"))
+                    }
+                    None => {}
+                }
+            });
     }
 
     pub fn open_package(&self, pkg: &Package) {
@@ -935,8 +1069,14 @@ impl UiBridge {
         let bridge = self.clone();
         let pkg_id = pkg.id.clone();
         let pkg_for_open = pkg.clone();
-        self.store
-            .apply_action_async(action, pkg.id.clone(), move |result| {
+        self.store.apply_action_async(
+            action,
+            pkg.id.clone(),
+            {
+                let bridge = self.clone();
+                move |text| bridge.append_progress(text)
+            },
+            move |result| {
                 bridge.busy.borrow_mut().remove(&pkg_id);
                 bridge.package_finished();
                 done();
@@ -956,7 +1096,8 @@ impl UiBridge {
                         ));
                     }
                 }
-            });
+            },
+        );
     }
 
     fn toast_installed_with_open(&self, pkg: &Package) {
@@ -964,9 +1105,9 @@ impl UiBridge {
         let toast = libadwaita::Toast::new(&t_args("toast.done", &[("name", &pkg.name)]));
         toast.set_button_label(Some(&tcms_core::i18n::t("action.open")));
         let pkg = pkg.clone();
-        let window = self.window.clone();
+        let bridge = self.clone();
         toast.connect_button_clicked(move |_| {
-            let _ = launch_package(&pkg, &window);
+            bridge.launch_installed(&pkg);
         });
         self.toast.add_toast(toast);
     }
@@ -993,7 +1134,7 @@ impl UiBridge {
             let label = format!(
                 "{} — {}",
                 t(candidate.id.source.i18n_key()),
-                candidate.id.id
+                candidate.id.display_ref()
             );
             dialog.add_response(&idx.to_string(), &label);
         }
@@ -1024,33 +1165,31 @@ fn t_args_simple(key: &str, name: &str) -> String {
     tcms_core::i18n::t_args(key, &[("name", name)])
 }
 
-/// Best-effort launch of an installed app (Flatpak or desktop file).
-pub fn launch_package(pkg: &Package, parent: &impl IsA<gtk4::Window>) -> bool {
+/// Launch an actual desktop entry; never treat spawning gtk-launch as success.
+fn launch_package(
+    pkg: &Package,
+    on_exit: impl FnOnce(Result<(), glib::Error>) + 'static,
+) -> Result<(), String> {
     match pkg.id.source {
-        PackageSource::Flatpak => std::process::Command::new("flatpak")
-            .args(["run", &pkg.id.id])
-            .spawn()
-            .is_ok(),
+        PackageSource::Flatpak => {
+            let reference = pkg.id.flatpak_ref().map_err(|e| e.to_string())?;
+            let scope = &pkg.id.flatpak.as_ref().unwrap().installation;
+            let args = ["flatpak", "run", scope.flag(), reference.as_str()];
+            let args: Vec<_> = args.iter().map(std::ffi::OsStr::new).collect();
+            let process = gio::Subprocess::newv(&args, gio::SubprocessFlags::NONE)
+                .map_err(|e| e.to_string())?;
+            process.wait_check_async(gio::Cancellable::NONE, on_exit);
+            Ok(())
+        }
         PackageSource::Pacman | PackageSource::Aur => {
-            let ids = [
-                pkg.id.id.clone(),
-                pkg.name.to_ascii_lowercase().replace(' ', "-"),
-            ];
-            for id in ids {
-                if std::process::Command::new("gtk-launch")
-                    .arg(&id)
-                    .spawn()
-                    .is_ok()
-                {
-                    return true;
-                }
-            }
-            if let Some(home) = pkg.homepage.as_deref() {
-                let launcher = gtk4::UriLauncher::new(home);
-                launcher.launch(Some(parent), gio::Cancellable::NONE, |_| {});
-                return true;
-            }
-            false
+            let id = pkg
+                .desktop_id
+                .as_deref()
+                .ok_or_else(|| "desktop entry unavailable".to_string())?;
+            let info = gio::DesktopAppInfo::new(id)
+                .ok_or_else(|| format!("desktop entry not found: {id}"))?;
+            info.launch(&[], gio::AppLaunchContext::NONE)
+                .map_err(|e| e.to_string())
         }
     }
 }
@@ -1059,6 +1198,29 @@ pub fn launch_package(pkg: &Package, parent: &impl IsA<gtk4::Window>) -> bool {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[test]
+    fn partial_catalog_failure_retains_successful_sources() {
+        let pkg = Package::stub(
+            PackageSource::Pacman,
+            "example",
+            "Example",
+            "",
+            "1",
+            InstallState::Installed,
+        );
+        let result = collect_results([
+            ("pacman", Some(Ok(vec![pkg]))),
+            (
+                "flatpak",
+                Some(Err(tcms_core::Error::Message("offline".into()))),
+            ),
+            ("aur", None),
+        ]);
+        assert_eq!(result.packages.len(), 1);
+        assert_eq!(result.errors.len(), 1);
+        assert!(result.errors[0].contains("flatpak"));
+    }
 
     #[test]
     fn worker_disconnect_completes_callback_instead_of_leaving_ui_busy() {

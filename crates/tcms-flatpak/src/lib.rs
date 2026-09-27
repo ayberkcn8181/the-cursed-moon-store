@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use tcms_core::process::run;
 use tcms_core::{
-    Backend, BackendId, Error, InstallState, Package, PackageId, PackageSource, Result,
-    SearchQuery, SearchResult,
+    Backend, BackendId, Error, FlatpakInstallation, FlatpakRef, InstallState, Package, PackageId,
+    PackageSource, Result, SearchQuery, SearchResult,
 };
 
 #[derive(Debug, Clone)]
@@ -20,6 +20,7 @@ pub struct FlatpakBackend {
     enabled: bool,
     installation: String,
     remotes: Vec<FlatpakRemote>,
+    native_arch: std::sync::Arc<tokio::sync::OnceCell<String>>,
 }
 
 impl FlatpakBackend {
@@ -42,6 +43,7 @@ impl FlatpakBackend {
             enabled,
             installation: installation.into(),
             remotes,
+            native_arch: Default::default(),
         }
     }
 
@@ -77,282 +79,194 @@ impl FlatpakBackend {
         }
     }
 
-    fn default_remote(&self) -> &str {
-        self.remotes
-            .first()
-            .map(|r| r.name.as_str())
-            .unwrap_or("flathub")
-    }
-
-    fn update_args(&self, id: Option<&str>) -> Vec<String> {
-        let mut args = vec!["update".into(), "-y".into(), self.install_flag().into()];
-        if let Some(id) = id {
-            args.extend(["--".into(), id.into()]);
+    fn scope(&self) -> Result<FlatpakInstallation> {
+        match self.installation.to_ascii_lowercase().as_str() {
+            "user" => Ok(FlatpakInstallation::User),
+            "system" => Ok(FlatpakInstallation::System),
+            _ => Err(Error::Config(
+                "Flatpak installation must be user or system".into(),
+            )),
         }
-        args
     }
 
-    async fn update_refs(&self, id: Option<&str>) -> Result<()> {
-        self.ensure_enabled()?;
-        let args = self.update_args(id);
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = if self.installation.eq_ignore_ascii_case("user") {
-            run("flatpak", &refs).await?
-        } else {
-            tcms_core::process::run_privileged("flatpak", &refs, "flatpak update").await?
+    async fn native_arch(&self) -> Result<&str> {
+        self.native_arch
+            .get_or_try_init(|| async {
+                let out = run("flatpak", ["--default-arch"]).await?;
+                out.ensure_success("flatpak --default-arch")?;
+                let arch = out.stdout.trim().to_string();
+                if !tcms_core::is_safe_pkg_token(&arch) {
+                    return Err(Error::Message("invalid Flatpak architecture".into()));
+                }
+                Ok(arch)
+            })
+            .await
+            .map(String::as_str)
+    }
+
+    /// Flathub home-page entries do not carry a CLI ref. Resolve them once,
+    /// explicitly to Flathub stable in the selected installation.
+    pub async fn catalog_id(&self, app_id: &str) -> Result<PackageId> {
+        let mut id = PackageId::new(PackageSource::Flatpak, app_id);
+        id.flatpak = Some(FlatpakRef {
+            kind: "app".into(),
+            arch: self.native_arch().await?.into(),
+            branch: "stable".into(),
+            origin: "flathub".into(),
+            installation: self.scope()?,
+        });
+        id.flatpak_ref()?;
+        Ok(id)
+    }
+
+    fn action_args(
+        &self,
+        action: &str,
+        id: Option<&PackageId>,
+    ) -> Result<(Vec<String>, FlatpakInstallation)> {
+        let scope = match id {
+            Some(id) => id
+                .flatpak
+                .as_ref()
+                .ok_or_else(|| Error::Message("Flatpak reference has not been resolved".into()))?
+                .installation
+                .clone(),
+            None => self.scope()?,
         };
-        out.ensure_success("flatpak update")
+        let mut args = vec![
+            action.into(),
+            "-y".into(),
+            scope.flag().into(),
+            "--noninteractive".into(),
+        ];
+        if let Some(id) = id {
+            let reference = id.flatpak_ref()?;
+            args.push("--".into());
+            if action == "install" {
+                args.push(id.flatpak.as_ref().unwrap().origin.clone());
+            }
+            args.push(reference);
+        }
+        Ok((args, scope))
+    }
+
+    async fn transact(&self, action: &str, id: Option<&PackageId>) -> Result<()> {
+        self.ensure_enabled()?;
+        let (args, scope) = self.action_args(action, id)?;
+        let refs: Vec<_> = args.iter().map(String::as_str).collect();
+        let out = match scope {
+            FlatpakInstallation::User => run("flatpak", &refs).await?,
+            FlatpakInstallation::System => {
+                tcms_core::process::run_privileged("flatpak", &refs, "flatpak transaction").await?
+            }
+        };
+        out.ensure_success(&format!("flatpak {action}"))
+    }
+
+    async fn list_refs(&self, kind: &str, updates: bool) -> Result<Vec<Package>> {
+        let scope = self.scope()?;
+        let filter = format!("--{kind}");
+        let mut args = vec![
+            if updates { "remote-ls" } else { "list" },
+            scope.flag(),
+            &filter,
+            "--columns=application,arch,branch,origin,name,version,description",
+        ];
+        if updates {
+            args.extend(["--updates", "--all"]);
+        }
+        let out = run("flatpak", args).await?;
+        out.ensure_success("flatpak list refs")?;
+        parse_refs(&out.stdout, kind, scope)
     }
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
-        self.list_installed_refs(false).await
-    }
-
-    async fn list_installed_refs(&self, include_runtimes: bool) -> Result<Vec<Package>> {
-        let mut args = vec![
-            "list",
-            self.install_flag(),
-            "--columns=application,name,version,description",
-        ];
-        if !include_runtimes {
-            args.push("--app");
-        }
-        let out = run("flatpak", args).await?;
-        out.ensure_success("flatpak list")?;
-
-        let updates = self.update_map().await.unwrap_or_default();
-        let mut packages = Vec::new();
-        for line in out.stdout.lines() {
-            let cols: Vec<&str> = line.split('\t').collect();
-            if cols.is_empty() || cols[0].trim().is_empty() {
-                continue;
-            }
-            let app_id = cols[0].trim().to_string();
-            let name = cols
-                .get(1)
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&app_id);
-            let version = cols.get(2).map(|s| s.trim()).unwrap_or("").to_string();
-            let summary = cols.get(3).map(|s| s.trim()).unwrap_or("").to_string();
-            let state = if updates.contains_key(&app_id) {
-                InstallState::Updatable
-            } else {
-                InstallState::Installed
-            };
-            packages.push(Package {
-                id: PackageId::new(PackageSource::Flatpak, &app_id),
-                name: name.to_string(),
-                summary: if summary.is_empty() {
-                    app_id.clone()
-                } else {
-                    summary.clone()
-                },
-                description: summary,
-                version,
-                available_version: updates.get(&app_id).cloned(),
-                icon_name: Some("application-x-executable".into()),
-                icon_url: None,
-                publisher: None,
-                bug_url: None,
-                donate_url: None,
-                permissions: None,
-                is_proprietary: None,
-                developer: None,
-                license: None,
-                homepage: None,
-                size_bytes: None,
-                state,
-                installed_elsewhere: false,
-                categories: Vec::new(),
-            });
-        }
-        packages.sort_by_key(|a| a.name.to_lowercase());
-        Ok(packages)
-    }
-
-    async fn update_map(&self) -> Result<HashMap<String, String>> {
-        let out = run(
-            "flatpak",
-            [
-                "remote-ls",
-                "--updates",
-                self.install_flag(),
-                "--columns=application,version",
-            ],
-        )
-        .await?;
-        let mut map = HashMap::new();
-        out.ensure_success("flatpak remote-ls --updates")?;
-        for line in out.stdout.lines() {
-            let cols: Vec<&str> = line.split('\t').collect();
-            if cols.len() >= 2 {
-                map.insert(cols[0].trim().to_string(), cols[1].trim().to_string());
-            } else if cols.len() == 1 && !cols[0].trim().is_empty() {
-                map.insert(cols[0].trim().to_string(), String::new());
-            }
-        }
-        Ok(map)
+        // Installed means local state; remote freshness belongs to Updates.
+        self.list_refs("app", false).await
     }
 
     async fn search_remote(&self, text: &str) -> Result<Vec<Package>> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
         }
-        // Prefer apps-only search when the flatpak CLI supports --app.
-        let out = match run(
+        let scope = self.scope()?;
+        // search has no --app/--arch option. It searches native AppStream data.
+        let out = run(
             "flatpak",
             [
                 "search",
-                "--app",
-                "--columns=application,name,version,description,branch",
+                scope.flag(),
+                "--columns=application,name,version,description,branch,remotes",
+                "--",
                 text,
             ],
         )
-        .await
-        {
-            Ok(o) if o.success() || !o.stdout.trim().is_empty() => o,
-            _ => {
-                run(
-                    "flatpak",
-                    [
-                        "search",
-                        "--columns=application,name,version,description,branch",
-                        text,
-                    ],
-                )
-                .await?
-            }
-        };
-        if !out.success() && out.stdout.trim().is_empty() {
-            return Ok(Vec::new());
+        .await?;
+        out.ensure_success("flatpak search")?;
+        if out.stdout.trim().is_empty() || out.stdout.trim() == "No matches found" {
+            return Ok(vec![]);
         }
-
-        let mut packages = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for line in out.stdout.lines() {
-            if line.starts_with("Application ID") || line.starts_with("ID") {
-                continue;
-            }
-            let cols: Vec<&str> = if line.contains('\t') {
-                line.split('\t').collect()
-            } else {
-                line.split("  ")
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            };
-            if cols.is_empty() {
-                continue;
-            }
-            let app_id = cols[0].trim().to_string();
-            if app_id.is_empty() || !seen.insert(app_id.clone()) {
-                continue;
-            }
-            let name = cols
-                .get(1)
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&app_id)
-                .to_string();
-            let version = cols
-                .get(2)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
-            let summary = cols
-                .get(3)
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default();
-
-            packages.push(Package {
-                id: PackageId::new(PackageSource::Flatpak, &app_id),
-                name,
-                summary: summary.clone(),
-                description: summary,
-                version,
-                available_version: None,
-                icon_name: Some("application-x-executable".into()),
-                icon_url: None,
-                publisher: None,
-                bug_url: None,
-                donate_url: None,
-                permissions: None,
-                is_proprietary: None,
-                developer: None,
-                license: None,
-                homepage: None,
-                size_bytes: None,
-                state: InstallState::Available,
-                installed_elsewhere: false,
-                categories: Vec::new(),
-            });
-
-            if packages.len() >= 60 {
-                break;
-            }
-        }
-        Ok(packages)
+        parse_search(&out.stdout, self.native_arch().await?, scope)
     }
 
-    async fn show_permissions(&self, app_id: &str) -> Option<String> {
+    async fn show_permissions(&self, id: &PackageId) -> Option<String> {
+        let reference = id.flatpak_ref().ok()?;
+        let scope = &id.flatpak.as_ref()?.installation;
         let out = run(
             "flatpak",
-            ["info", "--show-permissions", self.install_flag(), app_id],
+            ["info", "--show-permissions", scope.flag(), "--", &reference],
         )
         .await
-        .ok();
-        if let Some(out) = out {
-            if out.success() && !out.stdout.trim().is_empty() {
-                return Some(summarize_flatpak_permissions(&out.stdout));
-            }
-        }
-        let out = run("flatpak", ["info", "--show-permissions", app_id])
-            .await
-            .ok()?;
-        if out.success() && !out.stdout.trim().is_empty() {
-            return Some(summarize_flatpak_permissions(&out.stdout));
-        }
-        Some(tcms_core::i18n::t("detail.permissions_sandbox"))
+        .ok()?;
+        (out.success() && !out.stdout.trim().is_empty())
+            .then(|| summarize_flatpak_permissions(&out.stdout))
     }
 
     pub async fn enrich_package(&self, mut pkg: Package) -> Package {
-        if let Ok(meta) = tcms_core::fetch_flathub_app(&pkg.id.id).await {
-            if pkg.summary.is_empty() {
-                pkg.summary = meta.summary;
-            }
-            if pkg.description.is_empty() || pkg.description == pkg.name {
-                pkg.description = meta.description;
-            }
-            if pkg.icon_url.is_none() {
-                pkg.icon_url = meta.icon_url;
-            }
-            if pkg.developer.is_none() {
-                pkg.developer = meta.developer.clone();
-            }
-            if pkg.publisher.is_none() {
-                pkg.publisher = meta.publisher.or(meta.developer);
-            }
-            if pkg.license.is_none() {
-                pkg.license = meta.license;
-            }
-            if pkg.homepage.is_none() {
-                pkg.homepage = meta.homepage;
-            }
-            if pkg.bug_url.is_none() {
-                pkg.bug_url = meta.bug_url;
-            }
-            if pkg.donate_url.is_none() {
-                pkg.donate_url = meta.donate_url;
-            }
-            if pkg.is_proprietary.is_none() {
-                pkg.is_proprietary = meta.is_proprietary;
-            }
-            if pkg.size_bytes.is_none() {
-                pkg.size_bytes = meta.size_bytes;
+        if pkg
+            .id
+            .flatpak
+            .as_ref()
+            .is_some_and(|identity| identity.origin == "flathub")
+        {
+            if let Ok(meta) = tcms_core::fetch_flathub_app(&pkg.id.id).await {
+                if pkg.summary.is_empty() {
+                    pkg.summary = meta.summary;
+                }
+                if pkg.description.is_empty() || pkg.description == pkg.name {
+                    pkg.description = meta.description;
+                }
+                if pkg.icon_url.is_none() {
+                    pkg.icon_url = meta.icon_url;
+                }
+                if pkg.developer.is_none() {
+                    pkg.developer = meta.developer.clone();
+                }
+                if pkg.publisher.is_none() {
+                    pkg.publisher = meta.publisher.or(meta.developer);
+                }
+                if pkg.license.is_none() {
+                    pkg.license = meta.license;
+                }
+                if pkg.homepage.is_none() {
+                    pkg.homepage = meta.homepage;
+                }
+                if pkg.bug_url.is_none() {
+                    pkg.bug_url = meta.bug_url;
+                }
+                if pkg.donate_url.is_none() {
+                    pkg.donate_url = meta.donate_url;
+                }
+                if pkg.is_proprietary.is_none() {
+                    pkg.is_proprietary = meta.is_proprietary;
+                }
+                if pkg.size_bytes.is_none() {
+                    pkg.size_bytes = meta.size_bytes;
+                }
             }
         }
         if pkg.permissions.is_none() {
-            pkg.permissions = self.show_permissions(&pkg.id.id).await;
+            pkg.permissions = self.show_permissions(&pkg.id).await;
         }
         pkg.apply_license_heuristics();
         pkg
@@ -463,26 +377,37 @@ impl Backend for FlatpakBackend {
     }
 
     async fn get_package(&self, id: &PackageId) -> Result<Option<Package>> {
+        self.ensure_enabled()?;
         if id.source != PackageSource::Flatpak {
             return Ok(None);
         }
-        if let Some(pkg) = self
+        let resolved;
+        let id = if id.flatpak.is_none() {
+            resolved = self.catalog_id(&id.id).await?;
+            &resolved
+        } else {
+            id
+        };
+        // Preserve the entry's installation even if Settings changed meanwhile.
+        let mut backend = self.clone();
+        backend.installation = id.flatpak.as_ref().unwrap().installation.label().into();
+        if let Some(pkg) = backend
             .list_installed()
             .await?
             .into_iter()
-            .find(|p| p.id.id == id.id)
+            .find(|p| p.id == *id)
         {
-            return Ok(Some(self.enrich_package(pkg).await));
+            return Ok(Some(backend.enrich_package(pkg).await));
         }
-        let found = self.search_remote(&id.id).await?;
-        if let Some(pkg) = found.into_iter().find(|p| p.id.id == id.id) {
-            return Ok(Some(self.enrich_package(pkg).await));
+        if let Some(pkg) = backend
+            .search_remote(&id.id)
+            .await?
+            .into_iter()
+            .find(|p| p.id == *id)
+        {
+            return Ok(Some(backend.enrich_package(pkg).await));
         }
-        // Fall back to Flathub API even if local search misses.
-        match tcms_core::fetch_flathub_app(&id.id).await {
-            Ok(pkg) => Ok(Some(self.enrich_package(pkg).await)),
-            Err(_) => Ok(None),
-        }
+        Ok(None)
     }
 
     async fn installed(&self) -> Result<Vec<Package>> {
@@ -492,85 +417,107 @@ impl Backend for FlatpakBackend {
 
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
-        let updates = self.update_map().await?;
-        let installed = self.list_installed_refs(true).await?;
-        Ok(installed
-            .into_iter()
-            .filter_map(|mut p| {
-                if let Some(ver) = updates.get(&p.id.id) {
-                    p.state = InstallState::Updatable;
-                    p.available_version = Some(ver.clone());
-                    Some(p)
-                } else {
-                    None
+        let mut packages = Vec::new();
+        for kind in ["app", "runtime"] {
+            let (local, remote) =
+                tokio::try_join!(self.list_refs(kind, false), self.list_refs(kind, true))?;
+            let available: HashMap<_, _> = remote.into_iter().map(|p| (p.id, p.version)).collect();
+            for mut pkg in local {
+                if let Some(version) = available.get(&pkg.id) {
+                    pkg.state = InstallState::Updatable;
+                    pkg.available_version = Some(version.clone());
+                    packages.push(pkg);
                 }
-            })
-            .collect())
+            }
+        }
+        Ok(packages)
     }
 
     async fn install(&self, id: &PackageId) -> Result<()> {
-        self.ensure_enabled()?;
-        if id.source != PackageSource::Flatpak {
-            return Err(Error::Message(format!(
-                "flatpak backend cannot install {}",
-                id
-            )));
-        }
-        tcms_core::assert_safe_package_id(id)?;
-        let remote = self.default_remote();
-        let args = ["install", "-y", self.install_flag(), remote, id.id.as_str()];
-        let out = if self.installation.eq_ignore_ascii_case("user") {
-            run("flatpak", args).await?
-        } else {
-            tcms_core::process::run_privileged(
-                "flatpak",
-                &args,
-                &format!("flatpak install {}", id.id),
-            )
-            .await?
-        };
-        out.ensure_success(&format!("flatpak install {}", id.id))?;
-        Ok(())
+        self.transact("install", Some(id)).await
     }
-
     async fn update(&self, id: &PackageId) -> Result<()> {
-        if id.source != PackageSource::Flatpak {
-            return Err(Error::Message(format!(
-                "flatpak backend cannot update {id}"
-            )));
-        }
-        tcms_core::assert_safe_package_id(id)?;
-        self.update_refs(Some(&id.id)).await
+        self.transact("update", Some(id)).await
     }
-
     async fn update_all(&self) -> Result<()> {
-        // No --app restriction: runtimes and related extensions must be updated too.
-        self.update_refs(None).await
+        self.transact("update", None).await
     }
-
     async fn remove(&self, id: &PackageId) -> Result<()> {
-        self.ensure_enabled()?;
-        if id.source != PackageSource::Flatpak {
+        self.transact("uninstall", Some(id)).await
+    }
+}
+
+fn parse_refs(output: &str, kind: &str, installation: FlatpakInstallation) -> Result<Vec<Package>> {
+    let mut packages = Vec::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let mut cols: Vec<_> = line.split('\t').collect();
+        if cols.len() < 4 || cols.len() > 7 {
             return Err(Error::Message(format!(
-                "flatpak backend cannot remove {}",
-                id
+                "unexpected Flatpak ref row: {line}"
             )));
         }
-        tcms_core::assert_safe_package_id(id)?;
-        let args = ["uninstall", "-y", self.install_flag(), id.id.as_str()];
-        let out = if self.installation.eq_ignore_ascii_case("user") {
-            run("flatpak", args).await?
-        } else {
-            tcms_core::process::run_privileged(
-                "flatpak",
-                &args,
-                &format!("flatpak uninstall {}", id.id),
-            )
-            .await?
-        };
-        out.ensure_success(&format!("flatpak uninstall {}", id.id))?;
-        Ok(())
+        cols.resize(7, "");
+        let mut pkg = Package::stub(
+            PackageSource::Flatpak,
+            cols[0],
+            if cols[4].is_empty() { cols[0] } else { cols[4] },
+            cols[6],
+            cols[5],
+            InstallState::Installed,
+        );
+        pkg.id.flatpak = Some(FlatpakRef {
+            kind: kind.into(),
+            arch: cols[1].into(),
+            branch: cols[2].into(),
+            origin: cols[3].into(),
+            installation: installation.clone(),
+        });
+        pkg.id.flatpak_ref()?;
+        packages.push(pkg);
     }
+    Ok(packages)
+}
+
+fn parse_search(
+    output: &str,
+    arch: &str,
+    installation: FlatpakInstallation,
+) -> Result<Vec<Package>> {
+    let mut packages = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let cols: Vec<_> = line.split('\t').collect();
+        if cols.len() != 6 {
+            return Err(Error::Message(format!(
+                "unexpected Flatpak search row: {line}"
+            )));
+        }
+        for remote in cols[5].split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let mut pkg = Package::stub(
+                PackageSource::Flatpak,
+                cols[0],
+                cols[1],
+                cols[3],
+                cols[2],
+                InstallState::Available,
+            );
+            pkg.id.flatpak = Some(FlatpakRef {
+                kind: "app".into(),
+                arch: arch.into(),
+                branch: cols[4].into(),
+                origin: remote.into(),
+                installation: installation.clone(),
+            });
+            pkg.id.flatpak_ref()?;
+            if seen.insert(pkg.id.clone()) {
+                packages.push(pkg);
+            }
+        }
+        if packages.len() >= 60 {
+            break;
+        }
+    }
+    Ok(packages)
 }
 
 fn summarize_flatpak_permissions(raw: &str) -> String {
@@ -613,14 +560,73 @@ fn summarize_flatpak_permissions(raw: &str) -> String {
 mod tests {
     use super::*;
 
+    fn identity(branch: &str, origin: &str, scope: FlatpakInstallation) -> PackageId {
+        let mut id = PackageId::new(PackageSource::Flatpak, "org.example.App");
+        id.flatpak = Some(FlatpakRef {
+            kind: "app".into(),
+            arch: "x86_64".into(),
+            branch: branch.into(),
+            origin: origin.into(),
+            installation: scope,
+        });
+        id
+    }
+
     #[test]
-    fn updates_use_update_and_include_runtimes_in_bulk() {
-        let backend = FlatpakBackend::new(true, "user", "flathub|https://example.com/repo");
+    fn transactions_keep_origin_branch_arch_and_original_scope() {
+        let backend = FlatpakBackend::new(true, "system", "flathub|https://example.org");
+        let id = identity("beta", "testing", FlatpakInstallation::User);
+        let (args, _) = backend.action_args("install", Some(&id)).unwrap();
         assert_eq!(
-            backend.update_args(Some("org.example.App")),
-            ["update", "-y", "--user", "--", "org.example.App"]
+            args,
+            [
+                "install",
+                "-y",
+                "--user",
+                "--noninteractive",
+                "--",
+                "testing",
+                "app/org.example.App/x86_64/beta"
+            ]
         );
-        assert_eq!(backend.update_args(None), ["update", "-y", "--user"]);
+        for action in ["update", "uninstall"] {
+            let (args, _) = backend.action_args(action, Some(&id)).unwrap();
+            assert_eq!(args.last().unwrap(), "app/org.example.App/x86_64/beta");
+            assert!(args.contains(&"--user".into()));
+        }
+        assert_eq!(
+            backend.action_args("update", None).unwrap().0,
+            ["update", "-y", "--system", "--noninteractive"]
+        );
+        assert!(backend
+            .action_args(
+                "install",
+                Some(&PackageId::new(PackageSource::Flatpak, "org.example.App"))
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn search_preserves_multiple_remotes_and_branches() {
+        let rows = "org.example.App\tExample\t1\tDescription\tstable\tflathub,testing\norg.example.App\tExample\t2\tDescription\tbeta\ttesting\n";
+        let packages = parse_search(rows, "x86_64", FlatpakInstallation::User).unwrap();
+        assert_eq!(packages.len(), 3);
+        assert_ne!(packages[0].id, packages[1].id);
+        assert_ne!(packages[1].id, packages[2].id);
+        assert!(!tcms_core::packages_match(&packages[1], &packages[2]));
+    }
+
+    #[test]
+    fn installed_refs_preserve_runtime_versions_and_empty_metadata() {
+        let rows = "org.example.Platform\tx86_64\t24.08\tflathub\t\t\t\norg.example.Platform\tx86_64\t25.08\tflathub\tPlatform\t25\tRuntime\n";
+        let packages = parse_refs(rows, "runtime", FlatpakInstallation::System).unwrap();
+        assert_eq!(packages.len(), 2);
+        assert_ne!(packages[0].id, packages[1].id);
+        assert_eq!(
+            packages[0].id.flatpak_ref().unwrap(),
+            "runtime/org.example.Platform/x86_64/24.08"
+        );
+        assert!(parse_refs("malformed", "app", FlatpakInstallation::User).is_err());
     }
 
     #[test]

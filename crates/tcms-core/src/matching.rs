@@ -57,6 +57,9 @@ pub fn packages_match(original: &Package, candidate: &Package) -> bool {
     if candidate.id == original.id {
         return true;
     }
+    if candidate.id.source == original.id.source {
+        return false;
+    }
     let a = normalize_app_key(&original.name, &original.id.id);
     let b = normalize_app_key(&candidate.name, &candidate.id.id);
     if a.is_empty() || b.is_empty() {

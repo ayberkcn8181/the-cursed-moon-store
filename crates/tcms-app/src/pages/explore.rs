@@ -242,15 +242,18 @@ fn run_search(
     let request_id2 = request_id.clone();
     bridge
         .store
-        .fetch_async(ListKind::Explore, text, move |packages| {
+        .fetch_async(ListKind::Explore, text, move |listing| {
             if request_id2.get() != id {
                 return;
             }
-            let packages = filter_by_category(packages, &category);
+            let packages = filter_by_category(listing.packages, &category);
             if packages.len() >= 40 {
                 bridge2.toast_msg(&t("explore.truncated"));
             }
             clear_host(&list_host2);
-            list_host2.append(&package_list(&packages, &bridge2));
+            crate::widgets::append_listing_errors(&list_host2, &listing.errors);
+            if !packages.is_empty() || listing.errors.is_empty() {
+                list_host2.append(&package_list(&packages, &bridge2));
+            }
         });
 }

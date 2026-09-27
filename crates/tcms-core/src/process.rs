@@ -2,7 +2,88 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+
+tokio::task_local! {
+    static PROGRESS: std::sync::mpsc::SyncSender<String>;
+}
+
+/// Only explicitly scoped transactions stream output; catalog queries do not.
+pub async fn with_progress<T>(
+    sender: std::sync::mpsc::SyncSender<String>,
+    operation: impl std::future::Future<Output = T>,
+) -> T {
+    PROGRESS.scope(sender, operation).await
+}
+
+pub fn report_progress(message: &str) {
+    let _ = PROGRESS.try_with(|sender| sender.try_send(message.to_string()));
+}
+
+async fn execute(cmd: &mut Command) -> std::io::Result<std::process::Output> {
+    let Ok(sender) = PROGRESS.try_with(Clone::clone) else {
+        return cmd.output().await;
+    };
+    let mut child = cmd.spawn()?;
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let (stdout, stderr, status) = tokio::try_join!(
+        stream_output(stdout, sender.clone()),
+        stream_output(stderr, sender),
+        child.wait()
+    )?;
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn stream_output(
+    mut pipe: impl AsyncRead + Unpin,
+    sender: std::sync::mpsc::SyncSender<String>,
+) -> std::io::Result<Vec<u8>> {
+    const MAX_RETAINED: usize = 128 * 1024;
+    let mut retained = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut escape = false;
+    let mut csi = false;
+    loop {
+        let count = pipe.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        retained.extend_from_slice(&buffer[..count]);
+        if retained.len() > MAX_RETAINED {
+            retained.drain(..retained.len() - MAX_RETAINED);
+        }
+        let mut clean = Vec::with_capacity(count);
+        for &byte in &buffer[..count] {
+            if escape {
+                if !csi && byte == b'[' {
+                    csi = true;
+                    continue;
+                }
+                if !csi || (0x40..=0x7e).contains(&byte) {
+                    escape = false;
+                    csi = false;
+                }
+                continue;
+            }
+            match byte {
+                0x1b => escape = true,
+                b'\r' => clean.push(b'\n'),
+                b'\n' | b'\t' | 0x20..=0xff => clean.push(byte),
+                _ => {}
+            }
+        }
+        if !clean.is_empty() {
+            let _ = sender.try_send(String::from_utf8_lossy(&clean).into_owned());
+        }
+    }
+    Ok(retained)
+}
 
 use crate::error::{Error, Result};
 
@@ -130,8 +211,7 @@ where
     inherit_gui_env(&mut cmd);
     cmd.envs(env.iter().copied());
 
-    let output = cmd
-        .output()
+    let output = execute(&mut cmd)
         .await
         .map_err(|e| Error::Command(format!("failed to spawn {:?}: {e}", program.as_ref())))?;
 
@@ -181,8 +261,7 @@ pub async fn run_privileged(program: &str, args: &[&str], context: &str) -> Resu
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
+        let output = execute(&mut cmd)
             .await
             .map_err(|e| Error::Command(format!("failed to spawn pkexec for {program}: {e}")))?;
 
@@ -222,6 +301,26 @@ pub async fn run_privileged(program: &str, args: &[&str], context: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn transaction_output_streams_both_pipes_and_keeps_exit_status() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(16);
+        let out = with_progress(
+            tx,
+            run(
+                "sh",
+                ["-c", "printf 'working\\r'; printf 'failure\\n' >&2; exit 7"],
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out.status, 7);
+        assert!(out.stderr.contains("failure"));
+        let streamed: String = rx.try_iter().collect();
+        assert!(streamed.contains("working"));
+        assert!(streamed.contains("failure"));
+        assert!(!streamed.contains('\r'));
+    }
 
     #[test]
     fn resolve_pacman_absolute() {

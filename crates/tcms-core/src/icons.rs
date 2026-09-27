@@ -72,13 +72,25 @@ pub async fn ensure_cached_icon(url: &str) -> Result<PathBuf> {
     if path.exists() && path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
         return Ok(path);
     }
-    let client = reqwest::Client::builder()
-        .user_agent("TheCursedMoonStore/0.1")
-        .timeout(Duration::from_secs(15))
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .build()
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    static DOWNLOADS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(6);
+    let _permit = DOWNLOADS
+        .acquire()
+        .await
         .map_err(|e| Error::Message(e.to_string()))?;
-    let response = client
+    let client = if let Some(client) = CLIENT.get() {
+        client.clone()
+    } else {
+        let client = reqwest::Client::builder()
+            .user_agent("TheCursedMoonStore/0.1")
+            .timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .build()
+            .map_err(|e| Error::Message(e.to_string()))?;
+        let _ = CLIENT.set(client.clone());
+        client
+    };
+    let mut response = client
         .get(url)
         .send()
         .await
@@ -97,15 +109,16 @@ pub async fn ensure_cached_icon(url: &str) -> Result<PathBuf> {
             )));
         }
     }
-    let bytes = response
-        .bytes()
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| Error::Message(e.to_string()))?;
-    if bytes.len() as u64 > MAX_ICON_BYTES {
-        return Err(Error::Message(format!(
-            "icon too large ({} bytes, max {MAX_ICON_BYTES})",
-            bytes.len()
-        )));
+        .map_err(|e| Error::Message(e.to_string()))?
+    {
+        if bytes.len() + chunk.len() > MAX_ICON_BYTES as usize {
+            return Err(Error::Message("icon exceeds size limit".into()));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     if bytes.is_empty() || !looks_like_image(&bytes, content_type.as_deref()) {
         return Err(Error::Message(

@@ -637,7 +637,10 @@ where
     poll_local(rx, on_done);
 }
 
-fn poll_local<T: 'static>(rx: mpsc::Receiver<T>, on_done: impl FnOnce(T) + 'static) {
+fn poll_local<T: 'static>(
+    rx: mpsc::Receiver<anyhow::Result<T>>,
+    on_done: impl FnOnce(anyhow::Result<T>) + 'static,
+) {
     let mut on_done = Some(on_done);
     glib::timeout_add_local(Duration::from_millis(50), move || match rx.try_recv() {
         Ok(value) => {
@@ -647,7 +650,14 @@ fn poll_local<T: 'static>(rx: mpsc::Receiver<T>, on_done: impl FnOnce(T) + 'stat
             glib::ControlFlow::Break
         }
         Err(mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-        Err(mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        Err(mpsc::TryRecvError::Disconnected) => {
+            if let Some(callback) = on_done.take() {
+                callback(Err(anyhow::anyhow!(
+                    "compatibility worker stopped unexpectedly"
+                )));
+            }
+            glib::ControlFlow::Break
+        }
     });
 }
 

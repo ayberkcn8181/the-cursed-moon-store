@@ -161,3 +161,41 @@ cargo clippy --workspace --all-targets
 <p align="center">
   <sub>Made for Arch · CachyOS · GNOME / GTK desktops</sub>
 </p>
+
+### Katalog performansı ve işlem görünürlüğü
+
+- Kurulu paketler uygulama genelinde 30 saniyelik bir önbelleği paylaşır. Eşzamanlı
+  sayfa istekleri aynı taramayı kullanır; ayar değişikliği, kaynak yenileme ve
+  paket işlemi tamamlandığında (hata durumunda da) önbellek geçersiz kılınır.
+  Uygulama dışında yapılan değişiklikler sonraki taramada, en geç önbellek süresi
+  dolduktan sonraki sorguda görülür.
+- Masaüstü dosyalarının paket sahipliği 128 dosyalık gruplarla sorgulanır.
+  Entegrasyon testi, 257 dosya için 3 `pacman -Qo` çağrısını doğrular.
+- Kurulu AUR ve Flatpak listeleri ağ üzerinden güncelleme sorgusu yapmaz.
+  Güncelleme kontrolü Güncellemeler sayfasındadır. Arama ve kurulu uygulama
+  ekranları, başarısız kaynakları erişilebilen sonuçlarla birlikte gösterir.
+- Flatpak kimliği uygulama/runtime türü, uygulama kimliği, mimari, dal, depo ve
+  kullanıcı/sistem kapsamını taşır. Tekil işlemler kaydın kapsamını korur;
+  toplu güncelleme Ayarlar'da seçilen kapsamı kullanır. Şimdilik yalnızca
+  `user` ve `system` desteklenir, adlandırılmış ek kurulumlar desteklenmez.
+- İkonlar ortak bağlantı havuzu ve en fazla 6 eşzamanlı indirmeyle yüklenir;
+  her ikon için ayrı işletim sistemi thread'i açılmaz.
+- Pencerenin altındaki **İşlem çıktısı**, paket yöneticisinin stdout/stderr
+  çıktısını işlem sürerken gösterir. Görünüm son 64.000 karakterle sınırlıdır;
+  yoğun çıktı altında ara parçalar atlanabilir. Yüzde tahmini veya güvenli
+  olmayan işlem ortası iptal sunulmaz.
+
+### Entegrasyon testleri
+
+`cargo test --workspace` kontrollü komut taklitleriyle Flatpak kimliğini,
+kurulu liste için ağ sorgusu yapılmamasını ve toplu Pacman sahiplik sorgularını
+sınar. CI ayrıca ayrı bir Arch konteynerinde gerçek `pacman` ile küçük bir yerel
+paketi geçici kök dizine kurar, backend üzerinden sürümünü okur ve kaldırır:
+
+```bash
+# Yalnızca geçici Arch CI/test konteynerinde root olarak:
+TCMS_ARCH_SMOKE=1 cargo test --locked -p tcms-pacman --test arch_smoke -- --ignored
+```
+
+Bu test masaüstü Polkit oturumunu, gerçek AUR derlemesini veya Flathub ağından
+kurulumu kapsamaz; bunlar canlı sistem doğrulamasının kalan parçalarıdır.

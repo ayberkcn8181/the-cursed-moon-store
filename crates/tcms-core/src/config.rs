@@ -274,6 +274,7 @@ mod tests {
             available_version: None,
             icon_name: None,
             icon_url: None,
+            desktop_id: None,
             developer: None,
             publisher: None,
             license: None,
