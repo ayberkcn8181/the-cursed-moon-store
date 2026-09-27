@@ -92,7 +92,7 @@ fn load_snapshot(content: &GtkBox, bridge: &UiBridge) {
     if std::thread::Builder::new()
         .name("tcms-compat-scan".into())
         .spawn(move || {
-            let _ = tx.send(scan_with_options(&options));
+            let _ = tx.send(Ok(scan_with_options(&options)));
         })
         .is_err()
     {
@@ -102,8 +102,9 @@ fn load_snapshot(content: &GtkBox, bridge: &UiBridge) {
 
     let content = content.clone();
     let bridge = bridge.clone();
-    poll_local(rx, move |snapshot| {
-        render_snapshot(&content, &bridge, snapshot);
+    poll_local(rx, move |result| match result {
+        Ok(snapshot) => render_snapshot(&content, &bridge, snapshot),
+        Err(error) => render_error(&content, &error.to_string()),
     });
 }
 

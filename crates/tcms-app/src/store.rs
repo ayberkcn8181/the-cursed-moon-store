@@ -793,9 +793,9 @@ impl StoreService {
     }
 }
 
-fn collect_results<const N: usize>(
-    results: [(&str, Option<tcms_core::Result<Vec<Package>>>); N],
-) -> PackageListing {
+type BackendListing = Option<tcms_core::Result<Vec<Package>>>;
+
+fn collect_results<const N: usize>(results: [(&str, BackendListing); N]) -> PackageListing {
     let mut listing = PackageListing::default();
     for (source, result) in results {
         match result {
@@ -926,7 +926,25 @@ impl UiBridge {
         self.set_activity(None);
     }
 
+    fn launch_resolved(&self, pkg: &Package) {
+        let bridge = self.clone();
+        let result = launch_package(pkg, move |result| {
+            if let Err(error) = result {
+                bridge.toast_msg(&format!("{}: {error}", tcms_core::i18n::t("launch.failed")));
+            }
+        });
+        if let Err(error) = result {
+            self.toast_msg(&format!("{}: {error}", tcms_core::i18n::t("launch.failed")));
+        }
+    }
+
     pub fn launch_installed(&self, pkg: &Package) {
+        // A fully resolved Flatpak keeps its original scope even after Settings
+        // changes. The subprocess reports a missing/uninstalled ref itself.
+        if pkg.id.flatpak.is_some() && !pkg.installed_elsewhere {
+            self.launch_resolved(pkg);
+            return;
+        }
         let wanted = pkg.clone();
         let bridge = self.clone();
         self.store
@@ -936,24 +954,10 @@ impl UiBridge {
                     .iter()
                     .find(|p| p.id == wanted.id)
                     .or_else(|| listing.packages.iter().find(|p| packages_match(&wanted, p)));
-                let exit_bridge = bridge.clone();
-                match target.and_then(|p| {
-                    launch_package(p, move |result| {
-                        if let Err(error) = result {
-                            exit_bridge.toast_msg(&format!(
-                                "{}: {error}",
-                                tcms_core::i18n::t("launch.failed")
-                            ));
-                        }
-                    })
-                    .err()
-                }) {
-                    Some(error) => bridge
-                        .toast_msg(&format!("{}: {error}", tcms_core::i18n::t("launch.failed"))),
-                    None if target.is_none() => {
-                        bridge.toast_msg(&tcms_core::i18n::t("launch.failed"))
-                    }
-                    None => {}
+                if let Some(target) = target {
+                    bridge.launch_resolved(target);
+                } else {
+                    bridge.toast_msg(&tcms_core::i18n::t("launch.failed"));
                 }
             });
     }
