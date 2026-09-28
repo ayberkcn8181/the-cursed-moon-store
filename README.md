@@ -184,6 +184,16 @@ cargo clippy --workspace --all-targets
 
 ### Katalog performansı ve işlem görünürlüğü
 
+- **Kurulu** sayfası etkin kaynakların bütün paketlerini gösterir. Pacman listesi
+  `pacman -Q` üzerinden alınır; masaüstü dosyası olmayan komut satırı araçları,
+  kütüphaneler ve sürücüler de dahildir. İsim/ikon eklemek için kullanılan
+  `pacman -Qo` başarısız olursa temel paket listesi korunur; `-Q` hataları ise
+  kaynak hatası olarak gösterilir. Keşfet filtreleri Kurulu sayfasını daraltmaz.
+- Flatpak kurulu listesi hem `user` hem `system` kapsamındaki uygulama ve
+  runtime'ları içerir. Aynı kimliğin farklı kapsamlardaki kayıtları ayrı kalır.
+  Kurulu sayfasındaki arama paket adı, kimliği ve açıklamayı eşleştirir;
+  GTK yalnızca görünür satırları oluşturur. Çalıştırılabilir masaüstü girdisi
+  olmayan sistem paketlerinde ve runtime'larda **Aç** düğmesi gösterilmez.
 - Kurulu paketler uygulama genelinde 30 saniyelik bir önbelleği paylaşır. Eşzamanlı
   sayfa istekleri aynı taramayı kullanır; ayar değişikliği, kaynak yenileme ve
   paket işlemi tamamlandığında (hata durumunda da) önbellek geçersiz kılınır.
@@ -219,3 +229,7 @@ TCMS_ARCH_SMOKE=1 cargo test --locked -p tcms-pacman --test arch_smoke -- --igno
 
 Bu test masaüstü Polkit oturumunu, gerçek AUR derlemesini veya Flathub ağından
 kurulumu kapsamaz; bunlar canlı sistem doğrulamasının kalan parçalarıdır.
+
+CI ayrıca Xvfb üzerinde 2.000 paketlik Kurulu listesinin satırları ihtiyaç
+oldukça oluşturmasını, aramasını ve doğru paket detayını açmasını sınar.
+`pacman -Qo` hatası taklit edilerek 3.000 paketin korunması ayrıca test edilir.

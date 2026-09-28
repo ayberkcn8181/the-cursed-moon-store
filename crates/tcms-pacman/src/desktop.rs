@@ -25,8 +25,8 @@ pub async fn discover_desktop_apps() -> Result<Vec<DesktopApp>> {
         PathBuf::from("/usr/share/applications"),
         PathBuf::from("/usr/local/share/applications"),
     ];
-    if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".local/share/applications"));
+    if let Some(data) = dirs::data_dir() {
+        dirs.push(data.join("applications"));
     }
 
     discover_desktop_apps_in(&dirs).await

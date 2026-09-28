@@ -18,7 +18,7 @@ jobs:
             gcc gcc-c++ clang make git curl \
             pkgconf-pkg-config \
             gtk4-devel libadwaita-devel \
-            openssl-devel xz-devel
+            openssl-devel xz-devel xorg-x11-server-Xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -28,6 +28,16 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      - name: Installed inventory GTK regression
+        run: |
+          Xvfb :99 -screen 0 1280x800x24 -nolisten tcp &
+          tcms_xvfb_pid=$!
+          trap 'kill "$tcms_xvfb_pid"' EXIT
+          for attempt in 1 2 3 4 5; do
+            test -S /tmp/.X11-unix/X99 && break
+            sleep 1
+          done
+          DISPLAY=:99 GSK_RENDERER=cairo cargo test --locked -p tcms-app installed_inventory_filters_virtualizes_and_opens_correct_package -- --ignored --test-threads=1
       - name: Build
         run: cargo build -p tcms-app
 

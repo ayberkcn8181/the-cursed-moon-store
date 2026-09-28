@@ -174,6 +174,9 @@ impl FlatpakBackend {
         ];
         if updates {
             args.extend(["--updates", "--all"]);
+        } else if kind == "runtime" {
+            // Include locale/debug extensions, hidden by `list --runtime` alone.
+            args.push("--all");
         }
         let out = run("flatpak", args).await?;
         out.ensure_success("flatpak list refs")?;
@@ -182,7 +185,12 @@ impl FlatpakBackend {
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
         // Installed means local state; remote freshness belongs to Updates.
-        self.list_refs("app", false).await
+        let (mut apps, runtimes) = tokio::try_join!(
+            self.list_refs("app", false),
+            self.list_refs("runtime", false),
+        )?;
+        apps.extend(runtimes);
+        Ok(apps)
     }
 
     async fn search_remote(&self, text: &str) -> Result<Vec<Package>> {

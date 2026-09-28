@@ -37,6 +37,10 @@ struct StoreInner {
 impl StoreService {
     pub fn new() -> Self {
         let config = AppConfig::load().unwrap_or_default();
+        Self::from_config(config)
+    }
+
+    pub(crate) fn from_config(config: AppConfig) -> Self {
         let pacman = PacmanBackend::new(
             config.enable_pacman,
             config.advanced.pacman_conf.clone(),
@@ -345,9 +349,9 @@ impl StoreService {
     }
 
     pub fn installed(&self) -> PackageListing {
-        let mut listing = self.collect_installed();
-        listing.packages = self.filter_catalog(listing.packages);
-        listing
+        // Installed is the full inventory of enabled sources. Explore filters
+        // must never hide installed libraries, drivers or command-line tools.
+        self.collect_installed()
     }
 
     pub fn updates(&self) -> PackageListing {
@@ -727,8 +731,12 @@ impl StoreService {
 
     fn load_installed(&self) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
+        let mut flatpak_user = flatpak.clone();
+        flatpak_user.set_installation("user");
+        let mut flatpak_system = flatpak;
+        flatpak_system.set_installation("system");
         self.runtime.block_on(async {
-            let (mut p, f, a) = tokio::join!(
+            let (mut p, fu, fs, a) = tokio::join!(
                 async {
                     if pacman.enabled() {
                         Some(pacman.installed().await)
@@ -737,8 +745,15 @@ impl StoreService {
                     }
                 },
                 async {
-                    if flatpak.enabled() {
-                        Some(flatpak.installed().await)
+                    if flatpak_user.enabled() {
+                        Some(flatpak_user.installed().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if flatpak_system.enabled() {
+                        Some(flatpak_system.installed().await)
                     } else {
                         None
                     }
@@ -762,7 +777,12 @@ impl StoreService {
                     }
                 }
             }
-            let mut listing = collect_results([("pacman", p), ("flatpak", f), ("aur", a)]);
+            let mut listing = collect_results([
+                ("pacman", p),
+                ("flatpak(user)", fu),
+                ("flatpak(system)", fs),
+                ("aur", a),
+            ]);
             let mut seen = std::collections::HashSet::new();
             listing.packages.retain(|p| seen.insert(p.id.clone()));
             listing.packages.sort_by_key(|p| p.name.to_lowercase());
