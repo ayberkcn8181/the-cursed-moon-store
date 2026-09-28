@@ -174,6 +174,9 @@ impl FlatpakBackend {
         ];
         if updates {
             args.extend(["--updates", "--all"]);
+        } else if kind == "runtime" {
+            // Include locale/debug extensions, hidden by `list --runtime` alone.
+            args.push("--all");
         }
         let out = run("flatpak", args).await?;
         out.ensure_success("flatpak list refs")?;

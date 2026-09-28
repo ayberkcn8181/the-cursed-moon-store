@@ -16,7 +16,10 @@ search)
   if [ -f "$TCMS_FIXTURE_ROOT/fail" ]; then echo 'remote unavailable' >&2; exit 42; fi
   printf 'org.example.App\tExample\t1\tDescription\tstable\tflathub\norg.example.App\tExample\t2\tDescription\tbeta\ttesting\n';;
 list)
-  case " $* " in *' --runtime '*) printf 'org.example.Platform\tx86_64\tstable\tflathub\tExample Runtime\t1\tRuntime\n'; exit 0;; esac
+  case " $* " in *' --runtime '*)
+    printf 'org.example.Platform\tx86_64\tstable\tflathub\tExample Runtime\t1\tRuntime\n'
+    case " $* " in *' --all '*) printf 'org.example.Platform.Locale\tx86_64\tstable\tflathub\tTranslations\t\tLocale extension\n';; esac
+    exit 0;; esac
   printf 'org.example.App\tx86_64\tstable\tflathub\tExample\t1\tDescription\norg.example.App\tx86_64\tbeta\ttesting\tExample Beta\t2\tDescription\n';;
 remote-ls)
   case " $* " in *' --runtime '*) exit 0;; esac
@@ -35,7 +38,8 @@ esac
     std::env::set_var("TCMS_FIXTURE_ROOT", &root);
     let mut backend = FlatpakBackend::new(true, "user", "flathub|https://example.org");
     let installed = backend.installed().await.unwrap();
-    assert_eq!(installed.len(), 3);
+    assert_eq!(installed.len(), 4);
+    assert_eq!(installed[3].id.id, "org.example.Platform.Locale");
     assert_eq!(installed[2].id.flatpak.as_ref().unwrap().kind, "runtime");
     assert!(installed.iter().all(|p| p.state == InstallState::Installed));
     assert_eq!(
