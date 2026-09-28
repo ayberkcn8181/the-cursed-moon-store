@@ -15,7 +15,9 @@ const APP_ID: &str = "com.cursedmoon.Store";
 
 fn main() -> Result<()> {
     if std::env::args_os().len() == 2
-        && std::env::args_os().nth(1).is_some_and(|arg| arg == "--version")
+        && std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == "--version")
     {
         println!("The Cursed Moon Store {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
