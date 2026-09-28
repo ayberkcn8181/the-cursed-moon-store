@@ -29,6 +29,11 @@ pub async fn discover_desktop_apps() -> Result<Vec<DesktopApp>> {
         dirs.push(home.join(".local/share/applications"));
     }
 
+    discover_desktop_apps_in(&dirs).await
+}
+
+/// Discover entries in explicit roots (also used by isolated CLI integration tests).
+pub async fn discover_desktop_apps_in(dirs: &[PathBuf]) -> Result<Vec<DesktopApp>> {
     let mut apps = Vec::new();
     for dir in dirs {
         if !dir.is_dir() {
@@ -50,7 +55,7 @@ pub async fn discover_desktop_apps() -> Result<Vec<DesktopApp>> {
     }
 
     // Resolve package ownership in one batch where possible.
-    resolve_packages(&mut apps).await;
+    resolve_packages(&mut apps).await?;
     Ok(apps)
 }
 
@@ -127,49 +132,63 @@ async fn parse_desktop_file(path: &Path) -> Result<Option<DesktopApp>> {
     }))
 }
 
-async fn resolve_packages(apps: &mut [DesktopApp]) {
-    use futures_util::stream::{self, StreamExt};
-
-    let paths: Vec<(usize, String)> = apps
+async fn resolve_packages(apps: &mut [DesktopApp]) -> Result<()> {
+    let paths: Vec<String> = apps
         .iter()
-        .enumerate()
-        .filter(|(_, app)| !app.is_flatpak)
-        .map(|(idx, app)| (idx, app.desktop_path.to_string_lossy().into_owned()))
+        .filter(|app| !app.is_flatpak)
+        .map(|app| app.desktop_path.to_string_lossy().into_owned())
         .collect();
-
-    type PacmanOwner = (String, Option<String>);
-    type PacmanQoHit = (usize, Option<PacmanOwner>);
-
-    let results: Vec<PacmanQoHit> = stream::iter(paths)
-        .map(|(idx, path)| async move {
-            let out = match run("pacman", ["-Qo", &path]).await {
-                Ok(o) => o,
-                Err(_) => return (idx, None),
-            };
-            if !out.success() {
-                return (idx, None);
-            }
-            let owned: Option<PacmanOwner> =
-                out.stdout
-                    .trim()
-                    .split("owned by ")
-                    .nth(1)
-                    .and_then(|rest| {
-                        let mut parts = rest.split_whitespace();
-                        let name = parts.next()?.to_string();
-                        let version = parts.next().map(str::to_string);
-                        Some((name, version))
-                    });
-            (idx, owned)
-        })
-        .buffer_unordered(16)
-        .collect()
-        .await;
-
-    for (idx, owned) in results {
-        if let Some((name, version)) = owned {
-            apps[idx].package_name = Some(name);
-            apps[idx].version = version;
+    let mut owners = std::collections::HashMap::new();
+    // Bound argv size without launching one pacman process per desktop entry.
+    for chunk in paths.chunks(128) {
+        let mut args = vec!["-Qo", "--"];
+        args.extend(chunk.iter().map(String::as_str));
+        let out = run("pacman", args).await?;
+        // Exit 1 is also used for unowned user-created desktop files. Preserve
+        // all successful owners from a mixed batch instead of dropping them.
+        let expected_missing = out
+            .stderr
+            .lines()
+            .all(|line| line.starts_with("error: No package owns "));
+        if out.status != 0 && (out.status != 1 || !expected_missing) {
+            out.ensure_success("pacman -Qo")?;
         }
+        owners.extend(parse_owners(&out.stdout));
+    }
+    for app in apps {
+        if let Some((name, version)) = owners.get(app.desktop_path.to_string_lossy().as_ref()) {
+            app.package_name = Some(name.clone());
+            app.version = Some(version.clone());
+        }
+    }
+    Ok(())
+}
+
+fn parse_owners(output: &str) -> std::collections::HashMap<String, (String, String)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (path, owner) = line.rsplit_once(" is owned by ")?;
+            let mut fields = owner.split_whitespace();
+            let name = fields.next()?;
+            let version = fields.next()?;
+            Some((path.to_string(), (name.to_string(), version.to_string())))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_ownership_preserves_paths_and_partial_results() {
+        let owners = parse_owners("/usr/share/applications/with spaces.desktop is owned by example 1.2-3\n/usr/share/applications/second.desktop is owned by other 2-1\n");
+        assert_eq!(owners.len(), 2);
+        assert_eq!(
+            owners["/usr/share/applications/with spaces.desktop"],
+            ("example".into(), "1.2-3".into())
+        );
+        assert!(!owners.contains_key("/home/me/.local/share/applications/custom.desktop"));
     }
 }

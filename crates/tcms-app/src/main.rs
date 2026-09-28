@@ -30,12 +30,13 @@ fn main() -> Result<()> {
         .flags(gio::ApplicationFlags::FLAGS_NONE)
         .build();
 
-    app.connect_activate(|app| {
+    let store = store::StoreService::new();
+    app.connect_activate(move |app| {
         // Replace existing windows when reloading UI (e.g. language change).
         for win in app.windows() {
             win.close();
         }
-        let window = StoreWindow::new(app);
+        let window = StoreWindow::new(app, store.clone());
         window.present();
     });
 

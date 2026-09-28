@@ -41,7 +41,15 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
         (Some(avail), InstallState::Updatable) => format!("{} → {avail}", pkg.version),
         _ => pkg.version.clone(),
     };
-    let source = t(pkg.id.source.i18n_key());
+    let source = match &pkg.id.flatpak {
+        Some(identity) => format!(
+            "{} · {} · {}",
+            identity.origin,
+            identity.branch,
+            identity.installation.label()
+        ),
+        None => t(pkg.id.source.i18n_key()),
+    };
     let summary = if pkg.summary.chars().count() > 90 {
         let s: String = pkg.summary.chars().take(87).collect();
         format!("{s}…")
@@ -254,4 +262,23 @@ pub fn featured_view(sections: &[tcms_core::FeaturedSection], bridge: &UiBridge)
         .hexpand(true)
         .child(&content)
         .build()
+}
+
+/// Keep partial results visible while explaining which source was unavailable.
+pub fn append_listing_errors(host: &GtkBox, errors: &[String]) {
+    if errors.is_empty() {
+        return;
+    }
+    let label = Label::builder()
+        .label(format!(
+            "{}\n{}",
+            tcms_core::i18n::t("catalog.load_failed"),
+            errors.join("\n")
+        ))
+        .wrap(true)
+        .xalign(0.0)
+        .selectable(true)
+        .css_classes(["error"])
+        .build();
+    host.append(&label);
 }

@@ -124,33 +124,39 @@ impl UpdatesPage {
                     bridge_ua.package_started(&t("updates.updating_all"));
                     let bridge2 = bridge_ua.clone();
                     let btn = btn.clone();
-                    bridge_ua.store.update_all_async(move |report| {
-                        btn.set_sensitive(true);
-                        bridge2.package_finished();
-                        let completed = report
-                            .completed
-                            .iter()
-                            .map(|id| t(id.source().i18n_key()))
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        let mut body =
-                            t_args("updates.completed_sources", &[("sources", &completed)]);
-                        if !report.errors.is_empty() {
-                            body.push_str("\n\n");
-                            body.push_str(&report.errors.join("\n"));
-                        }
-                        let result_dialog = libadwaita::AlertDialog::builder()
-                            .heading(t(if report.errors.is_empty() {
-                                "updates.finished"
-                            } else {
-                                "updates.partial_failure"
-                            }))
-                            .body(body)
-                            .build();
-                        result_dialog.add_response("close", &t("action.close"));
-                        result_dialog.present(Some(&bridge2.window));
-                        (bridge2.reload)();
-                    });
+                    bridge_ua.store.update_all_async(
+                        {
+                            let bridge = bridge_ua.clone();
+                            move |text| bridge.append_progress(text)
+                        },
+                        move |report| {
+                            btn.set_sensitive(true);
+                            bridge2.package_finished();
+                            let completed = report
+                                .completed
+                                .iter()
+                                .map(|id| t(id.source().i18n_key()))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let mut body =
+                                t_args("updates.completed_sources", &[("sources", &completed)]);
+                            if !report.errors.is_empty() {
+                                body.push_str("\n\n");
+                                body.push_str(&report.errors.join("\n"));
+                            }
+                            let result_dialog = libadwaita::AlertDialog::builder()
+                                .heading(t(if report.errors.is_empty() {
+                                    "updates.finished"
+                                } else {
+                                    "updates.partial_failure"
+                                }))
+                                .body(body)
+                                .build();
+                            result_dialog.add_response("close", &t("action.close"));
+                            result_dialog.present(Some(&bridge2.window));
+                            (bridge2.reload)();
+                        },
+                    );
                 });
                 dialog.present(Some(&window));
             });

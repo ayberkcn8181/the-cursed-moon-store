@@ -1,6 +1,6 @@
 //! AUR backend via RPC search and paru/yay/pacman for transactions.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -222,9 +222,15 @@ impl AurBackend {
         Ok(map)
     }
 
-    async fn vercmp_newer(remote: &str, local: &str) -> bool {
-        let out = run("vercmp", [remote, local]).await.ok();
-        out.map(|o| o.stdout.trim() == "1").unwrap_or(false)
+    async fn vercmp_newer(remote: &str, local: &str) -> Result<bool> {
+        let out = run("vercmp", [remote, local]).await?;
+        out.ensure_success("vercmp")?;
+        let ordering = out
+            .stdout
+            .trim()
+            .parse::<i32>()
+            .map_err(|_| Error::Message("invalid vercmp output".into()))?;
+        Ok(ordering > 0)
     }
 
     async fn helper_updates(&self) -> Result<HashMap<String, (String, String)>> {
@@ -251,6 +257,7 @@ impl AurBackend {
             },
             icon_name: Some("package-x-generic".into()),
             icon_url: None,
+            desktop_id: None,
             publisher: pkg.maintainer.clone(),
             bug_url: Some(format!("https://aur.archlinux.org/packages/{}", pkg.name)),
             donate_url: None,
@@ -318,7 +325,7 @@ impl Backend for AurBackend {
             });
         }
 
-        let foreign = self.foreign_packages().await.unwrap_or_default();
+        let foreign = self.foreign_packages().await?;
         let mut results = self.rpc_search(&query.text).await?;
         // Prefer popular hits so the first page feels useful.
         results.sort_by(|a, b| {
@@ -357,9 +364,9 @@ impl Backend for AurBackend {
         let Some(pkg) = info.get(&id.id) else {
             return Ok(None);
         };
-        let foreign = self.foreign_packages().await.unwrap_or_default();
+        let foreign = self.foreign_packages().await?;
         let state = if let Some(local) = foreign.get(&id.id) {
-            if Self::vercmp_newer(&pkg.version, local).await {
+            if Self::vercmp_newer(&pkg.version, local).await? {
                 InstallState::Updatable
             } else {
                 InstallState::Installed
@@ -377,47 +384,20 @@ impl Backend for AurBackend {
     async fn installed(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
         let foreign = self.foreign_packages().await?;
-        let names: Vec<String> = foreign.keys().cloned().collect();
-        let info = self.rpc_info(&names).await.unwrap_or_default();
-        let mut packages = Vec::new();
-        let mut seen = HashSet::new();
-        for (name, local_ver) in &foreign {
-            if !seen.insert(name.clone()) {
-                continue;
-            }
-            if let Some(pkg) = info.get(name) {
-                let state = if Self::vercmp_newer(&pkg.version, local_ver).await {
-                    InstallState::Updatable
-                } else {
-                    InstallState::Installed
-                };
-                packages.push(Self::to_package(pkg, state, Some(local_ver.clone())));
-            } else {
-                packages.push(Package {
-                    id: PackageId::new(PackageSource::Aur, name),
-                    name: name.clone(),
-                    summary: tcms_core::i18n::t_args("aur.foreign_summary", &[("name", name)]),
-                    description: String::new(),
-                    version: local_ver.clone(),
-                    available_version: None,
-                    icon_name: Some("package-x-generic".into()),
-                    icon_url: None,
-                    publisher: None,
-                    bug_url: None,
-                    donate_url: None,
-                    permissions: None,
-                    is_proprietary: None,
-                    developer: None,
-                    license: None,
-                    homepage: None,
-                    size_bytes: None,
-                    state: InstallState::Installed,
-                    installed_elsewhere: false,
-                    categories: vec!["AUR".into()],
-                });
-            }
-        }
-        packages.sort_by_key(|a| a.name.to_lowercase());
+        let mut packages: Vec<_> = foreign
+            .into_iter()
+            .map(|(name, version)| {
+                Package::stub(
+                    PackageSource::Aur,
+                    &name,
+                    &name,
+                    &tcms_core::i18n::t_args("aur.foreign_summary", &[("name", &name)]),
+                    &version,
+                    InstallState::Installed,
+                )
+            })
+            .collect();
+        packages.sort_by_key(|p| p.name.to_lowercase());
         Ok(packages)
     }
 
@@ -470,6 +450,7 @@ impl Backend for AurBackend {
                     available_version: Some(available_version),
                     icon_name: Some("package-x-generic".into()),
                     icon_url: None,
+                    desktop_id: None,
                     publisher: None,
                     bug_url: Some(format!("https://aur.archlinux.org/packages/{name}")),
                     donate_url: None,

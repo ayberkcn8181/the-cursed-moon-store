@@ -52,9 +52,56 @@ impl fmt::Display for PackageSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FlatpakInstallation {
+    User,
+    System,
+}
+
+impl FlatpakInstallation {
+    pub fn flag(&self) -> &'static str {
+        match self {
+            Self::User => "--user",
+            Self::System => "--system",
+        }
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::System => "system",
+        }
+    }
+}
+
+/// Full transaction identity, separate from the application ID used by AppStream.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FlatpakRef {
+    pub kind: String,
+    pub arch: String,
+    pub branch: String,
+    pub origin: String,
+    pub installation: FlatpakInstallation,
+}
+
+impl FlatpakRef {
+    pub fn validate(&self) -> crate::Result<()> {
+        if !matches!(self.kind.as_str(), "app" | "runtime")
+            || [&self.arch, &self.branch, &self.origin]
+                .iter()
+                .any(|s| !crate::matching::is_safe_pkg_token(s))
+        {
+            return Err(crate::Error::Message("invalid Flatpak reference".into()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PackageId {
     pub source: PackageSource,
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flatpak: Option<FlatpakRef>,
 }
 
 impl PackageId {
@@ -62,6 +109,35 @@ impl PackageId {
         Self {
             source,
             id: id.into(),
+            flatpak: None,
+        }
+    }
+    pub fn flatpak_ref(&self) -> crate::Result<String> {
+        crate::matching::assert_safe_package_id(self)?;
+        let identity = self.flatpak.as_ref().ok_or_else(|| {
+            crate::Error::Message("Flatpak reference has not been resolved".into())
+        })?;
+        identity.validate()?;
+        if self.source != PackageSource::Flatpak {
+            return Err(crate::Error::Message("not a Flatpak package".into()));
+        }
+        Ok(format!(
+            "{}/{}/{}/{}",
+            identity.kind, self.id, identity.arch, identity.branch
+        ))
+    }
+
+    pub fn display_ref(&self) -> String {
+        match &self.flatpak {
+            Some(identity) => format!(
+                "{} · {} · {} · {} · {}",
+                self.id,
+                identity.origin,
+                identity.branch,
+                identity.arch,
+                identity.installation.label()
+            ),
+            None => self.id.clone(),
         }
     }
 }
@@ -94,6 +170,8 @@ pub struct Package {
     pub icon_name: Option<String>,
     /// Remote icon URL (downloaded lazily into the cache).
     pub icon_url: Option<String>,
+    #[serde(default)]
+    pub desktop_id: Option<String>,
     pub developer: Option<String>,
     pub publisher: Option<String>,
     pub license: Option<String>,
@@ -133,6 +211,7 @@ impl Package {
             available_version: None,
             icon_name: Some("application-x-executable".into()),
             icon_url: None,
+            desktop_id: None,
             developer: None,
             publisher: None,
             license: None,

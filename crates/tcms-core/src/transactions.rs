@@ -8,7 +8,7 @@ use crate::{Backend, BackendId, Package};
 /// including a batch upgrade, rather than only while starting a child process.
 pub static PACKAGE_TRANSACTIONS: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PackageListing {
     pub packages: Vec<Package>,
     pub errors: Vec<String>,
@@ -35,6 +35,7 @@ pub async fn update_backends(backends: &[&dyn Backend]) -> UpdateReport {
                 .push("aur: skipped because the system upgrade failed".into());
             continue;
         }
+        crate::process::report_progress(&format!("\n=== {} ===\n", id.as_str()));
         match backend.update_all().await {
             Ok(()) => report.completed.push(id),
             Err(error) => {

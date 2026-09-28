@@ -19,8 +19,7 @@ pub struct StoreWindow {
 }
 
 impl StoreWindow {
-    pub fn new(app: &libadwaita::Application) -> Self {
-        let store = StoreService::new();
+    pub fn new(app: &libadwaita::Application, store: StoreService) -> Self {
         let icons = IconLoader::new(store.runtime());
 
         let window = libadwaita::ApplicationWindow::builder()
@@ -37,6 +36,23 @@ impl StoreWindow {
             .revealed(false)
             .build();
 
+        let transaction_log = gtk4::TextBuffer::new(None);
+        let log_view = gtk4::TextView::builder()
+            .buffer(&transaction_log)
+            .editable(false)
+            .cursor_visible(false)
+            .monospace(true)
+            .wrap_mode(gtk4::WrapMode::WordChar)
+            .build();
+        let log_scroll = gtk4::ScrolledWindow::builder()
+            .height_request(150)
+            .child(&log_view)
+            .build();
+        let log_expander = gtk4::Expander::builder()
+            .label(t("transaction.output"))
+            .child(&log_scroll)
+            .build();
+
         let reload_hooks: ReloadHooks = Rc::new(RefCell::new(Vec::new()));
         let window_gtk: gtk4::Window = window.clone().upcast();
         let busy_ops: Rc<RefCell<std::collections::HashSet<tcms_core::PackageId>>> =
@@ -51,6 +67,7 @@ impl StoreWindow {
             let icons = icons.clone();
             let busy_ops = busy_ops.clone();
             let activity = activity.clone();
+            let transaction_log = transaction_log.clone();
             let pending_transactions = pending_transactions.clone();
             Rc::new(move |open_detail: OpenDetailFn| UiBridge {
                 store: store.clone(),
@@ -69,6 +86,7 @@ impl StoreWindow {
                 busy: busy_ops.clone(),
                 pending_transactions: pending_transactions.clone(),
                 activity: activity.clone(),
+                transaction_log: transaction_log.clone(),
             })
         };
 
@@ -200,7 +218,10 @@ impl StoreWindow {
         let toolbar = libadwaita::ToolbarView::new();
         toolbar.add_top_bar(&header);
         toolbar.add_top_bar(&activity);
-        toolbar.set_content(Some(&view_stack));
+        let page_content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        page_content.append(&view_stack);
+        page_content.append(&log_expander);
+        toolbar.set_content(Some(&page_content));
 
         let bottom_switcher = libadwaita::ViewSwitcherBar::builder()
             .stack(&view_stack)
