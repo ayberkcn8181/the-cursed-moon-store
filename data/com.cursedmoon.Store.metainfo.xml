@@ -51,6 +51,12 @@
     <keyword>aur</keyword>
   </keywords>
   <releases>
+    <release version="0.1.1" date="2026-09-28">
+      <description>
+        <p>Complete installed package inventory, reliable package transactions,
+        safer compatibility archives, and Arch release packaging.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-12">
       <description>
         <p>Initial public development release.</p>

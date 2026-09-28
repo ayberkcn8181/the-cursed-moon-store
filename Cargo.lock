@@ -1680,7 +1680,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tcms-app"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-aur"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1715,7 +1715,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-compatibility"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cap-std",
@@ -1736,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1752,7 +1752,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-flatpak"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1763,7 +1763,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-pacman"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

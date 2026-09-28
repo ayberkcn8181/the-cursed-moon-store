@@ -1,0 +1,92 @@
+name: Arch package and release
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arch-package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install Arch build and validation tools
+        run: |
+          pacman -Syu --noconfirm --needed \
+            rust git python gtk4 libadwaita xz pacman-contrib flatpak polkit \
+            desktop-file-utils libxml2 shellcheck
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test release preparation
+        run: python scripts/test_prepare_release.py
+      - name: Create unprivileged package builder
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+      - name: Build source archive, Arch package and AUR submission bundle
+        env:
+          TCMS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: runuser -u builder -- bash scripts/ci-arch-package.sh
+      - name: Install and inspect the package
+        run: |
+          pacman -U --noconfirm dist/the-cursed-moon-store-*.pkg.tar.zst
+          pacman -Qkk the-cursed-moon-store
+          tcms_version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          test "$(the-cursed-moon-store --version)" = "The Cursed Moon Store $tcms_version"
+          ldd /usr/bin/the-cursed-moon-store > /tmp/tcms-ldd.txt
+          cat /tmp/tcms-ldd.txt
+          ! grep -q 'not found' /tmp/tcms-ldd.txt
+          desktop-file-validate /usr/share/applications/com.cursedmoon.Store.desktop
+          xmllint --noout /usr/share/metainfo/com.cursedmoon.Store.metainfo.xml
+          xmllint --noout /usr/share/polkit-1/actions/com.cursedmoon.Store.policy
+          test -s /usr/share/licenses/the-cursed-moon-store/LICENSE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package-${{ github.sha }}
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            dist/*.pkg.tar.zst
+            dist/*.tar.gz
+            dist/PKGBUILD
+            dist/.SRCINFO
+            dist/SHA256SUMS
+            dist/SOURCE_COMMIT
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch-package-${{ github.sha }}
+          path: dist
+      - name: Verify release files
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TCMS_RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TCMS_RELEASE_TAG" \
+            --verify-tag --title "The Cursed Moon Store $TCMS_RELEASE_TAG" \
+            --generate-notes \
+            dist/*.pkg.tar.zst dist/*.tar.gz dist/PKGBUILD dist/.SRCINFO \
+            dist/SHA256SUMS dist/SOURCE_COMMIT
