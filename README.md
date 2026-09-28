@@ -1,7 +1,7 @@
 # The Cursed Moon Store
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL%203.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![GTK](https://img.shields.io/badge/GTK-4%20%2B%20libadwaita-4A86CF.svg)](https://gtk.org/)
 [![Platform](https://img.shields.io/badge/Platform-Arch%20%2F%20CachyOS-1793D1.svg)](https://archlinux.org/)
 
@@ -57,8 +57,8 @@ cd the-cursed-moon-store
 
 # Bağımlılıklar (yukarıdaki pacman satırı)
 
-make release
-sudo make install
+make CARGO_TARGET_DIR="$PWD/target" release &&
+sudo make CARGO_TARGET_DIR="$PWD/target" install
 ```
 
 Bu komut şunları yükler:
@@ -98,9 +98,22 @@ Yapılandırma dosyası: `~/.config/the-cursed-moon-store/config.toml`
 
 ---
 
-## Arch paketi (PKGBUILD)
+## Dağıtım: GitHub ve AUR
 
-Aynı kaynak ağaçtan yerel paket:
+**GitHub Releases** için tek kurulabilir dosya `.pkg.tar.zst` biçimindedir.
+`vMAJOR.MINOR.PATCH` etiketi gönderildiğinde iş akışı Arch üzerinde derler,
+test eder, paketi kurarak doğrular ve başarılıysa Release'e ekler.
+Main/PR derlemeleri aynı dosyaları Actions artifact'i olarak saklar.
+
+[AUR ve sürüm yayınlama rehberi](docs/RELEASING.md), ilk yayın için gereken
+adımları ve elle kurulumdan pacman paketine geçişi açıklar. AUR geliştirme
+paketinin tarifi `packaging/aur/the-cursed-moon-store-git/PKGBUILD` konumundadır;
+AUR'da görünmesi için ayrıca AUR hesabınızla gönderilmesi gerekir.
+
+GitHub'dan indirilen paketi `sudo pacman -U ./DOSYA.pkg.tar.zst` ile kurabilirsiniz.
+Kurulu uygulamanın sürümünü `the-cursed-moon-store --version` ile kontrol edin.
+
+Aynı commit edilmiş kaynak ağaçtan yerel paket:
 
 ```bash
 makepkg -si

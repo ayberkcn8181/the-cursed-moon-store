@@ -14,6 +14,15 @@ use crate::window::StoreWindow;
 const APP_ID: &str = "com.cursedmoon.Store";
 
 fn main() -> Result<()> {
+    if std::env::args_os().len() == 2
+        && std::env::args_os()
+            .nth(1)
+            .is_some_and(|arg| arg == "--version")
+    {
+        println!("The Cursed Moon Store {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

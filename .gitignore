@@ -6,4 +6,10 @@
 .vscode/
 *.AppImage
 dist/
+/src/
+/pkg/
+/the-cursed-moon-store/
+*.pkg.tar.*
+*.src.tar.*
+__pycache__/
 .DS_Store
