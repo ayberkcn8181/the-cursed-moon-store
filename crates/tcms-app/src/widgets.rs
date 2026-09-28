@@ -168,121 +168,6 @@ pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox
     content
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::rc::Rc;
-    use std::time::{Duration, Instant};
-
-    fn descendants<T: IsA<gtk4::Widget> + glib::types::StaticType>(root: &gtk4::Widget) -> Vec<T> {
-        let mut result = Vec::new();
-        let mut child = root.first_child();
-        while let Some(widget) = child {
-            if let Ok(value) = widget.clone().downcast::<T>() {
-                result.push(value);
-            }
-            result.extend(descendants::<T>(&widget));
-            child = widget.next_sibling();
-        }
-        result
-    }
-
-    fn spin_until(predicate: impl Fn() -> bool) {
-        let context = glib::MainContext::default();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !predicate() {
-            assert!(Instant::now() < deadline, "GTK did not settle");
-            for _ in 0..100 {
-                if !context.pending() {
-                    break;
-                }
-                context.iteration(false);
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    #[test]
-    #[ignore = "requires a display; CI runs this under Xvfb"]
-    fn installed_inventory_filters_virtualizes_and_opens_correct_package() {
-        libadwaita::init().unwrap();
-        let store = crate::store::StoreService::from_config(tcms_core::AppConfig::default());
-        let window = gtk4::Window::builder()
-            .default_width(800)
-            .default_height(600)
-            .build();
-        let opened = Rc::new(std::cell::RefCell::new(None));
-        let opened_callback = opened.clone();
-        let bridge = UiBridge {
-            icons: crate::icon_loader::IconLoader::new(store.runtime()),
-            store,
-            toast: libadwaita::ToastOverlay::new(),
-            reload: Rc::new(|| {}),
-            open_detail: Rc::new(move |package| {
-                *opened_callback.borrow_mut() = Some(package.id.id)
-            }),
-            window: window.clone(),
-            busy: Default::default(),
-            activity: libadwaita::Banner::new(""),
-            transaction_log: gtk4::TextBuffer::new(None),
-            pending_transactions: Default::default(),
-        };
-        let packages: Vec<_> = (0..2000)
-            .map(|index| {
-                let id = format!("package-{index:05}");
-                Package::stub(
-                    tcms_core::PackageSource::Pacman,
-                    &id,
-                    &id,
-                    "",
-                    "1",
-                    InstallState::Installed,
-                )
-            })
-            .collect();
-        let content = installed_package_list(&packages, &bridge);
-        let search = content
-            .first_child()
-            .unwrap()
-            .downcast::<gtk4::SearchEntry>()
-            .unwrap();
-        window.set_child(Some(&content));
-        window.present();
-        spin_until(|| !descendants::<libadwaita::ActionRow>(content.upcast_ref()).is_empty());
-        let list = descendants::<gtk4::ListView>(content.upcast_ref())
-            .pop()
-            .unwrap();
-        assert_eq!(list.model().unwrap().n_items(), 2000);
-        assert!(
-            descendants::<libadwaita::ActionRow>(content.upcast_ref()).len() < 2000,
-            "the full inventory must not allocate a widget for every package"
-        );
-
-        search.set_text("PACKAGE-01999");
-        search.emit_by_name::<()>("search-changed", &[]);
-        spin_until(|| list.model().unwrap().n_items() == 1);
-        spin_until(|| {
-            descendants::<libadwaita::ActionRow>(content.upcast_ref())
-                .iter()
-                .any(|row| row.title() == "package-01999")
-        });
-        let row = descendants::<libadwaita::ActionRow>(content.upcast_ref())
-            .into_iter()
-            .find(|row| row.title() == "package-01999")
-            .unwrap();
-        row.emit_by_name::<()>("activated", &[]);
-        assert_eq!(opened.borrow().as_deref(), Some("package-01999"));
-        search.set_text("does-not-exist");
-        search.emit_by_name::<()>("search-changed", &[]);
-        assert_eq!(list.model().unwrap().n_items(), 0);
-        search.set_text("");
-        search.emit_by_name::<()>("search-changed", &[]);
-        assert_eq!(list.model().unwrap().n_items(), 2000);
-        window.set_child(gtk4::Widget::NONE);
-        window.close();
-    }
-}
-
 /// Actions for Explore / Installed / Updates lists.
 /// Install is intentionally omitted here — it only appears next to each
 /// repository on the detail page.
@@ -464,4 +349,119 @@ pub fn append_listing_errors(host: &GtkBox, errors: &[String]) {
         .css_classes(["error"])
         .build();
     host.append(&label);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    fn descendants<T: IsA<gtk4::Widget> + glib::types::StaticType>(root: &gtk4::Widget) -> Vec<T> {
+        let mut result = Vec::new();
+        let mut child = root.first_child();
+        while let Some(widget) = child {
+            if let Ok(value) = widget.clone().downcast::<T>() {
+                result.push(value);
+            }
+            result.extend(descendants::<T>(&widget));
+            child = widget.next_sibling();
+        }
+        result
+    }
+
+    fn spin_until(predicate: impl Fn() -> bool) {
+        let context = glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !predicate() {
+            assert!(Instant::now() < deadline, "GTK did not settle");
+            for _ in 0..100 {
+                if !context.pending() {
+                    break;
+                }
+                context.iteration(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; CI runs this under Xvfb"]
+    fn installed_inventory_filters_virtualizes_and_opens_correct_package() {
+        libadwaita::init().unwrap();
+        let store = crate::store::StoreService::from_config(tcms_core::AppConfig::default());
+        let window = gtk4::Window::builder()
+            .default_width(800)
+            .default_height(600)
+            .build();
+        let opened = Rc::new(std::cell::RefCell::new(None));
+        let opened_callback = opened.clone();
+        let bridge = UiBridge {
+            icons: crate::icon_loader::IconLoader::new(store.runtime()),
+            store,
+            toast: libadwaita::ToastOverlay::new(),
+            reload: Rc::new(|| {}),
+            open_detail: Rc::new(move |package| {
+                *opened_callback.borrow_mut() = Some(package.id.id)
+            }),
+            window: window.clone(),
+            busy: Default::default(),
+            activity: libadwaita::Banner::new(""),
+            transaction_log: gtk4::TextBuffer::new(None),
+            pending_transactions: Default::default(),
+        };
+        let packages: Vec<_> = (0..2000)
+            .map(|index| {
+                let id = format!("package-{index:05}");
+                Package::stub(
+                    tcms_core::PackageSource::Pacman,
+                    &id,
+                    &id,
+                    "",
+                    "1",
+                    InstallState::Installed,
+                )
+            })
+            .collect();
+        let content = installed_package_list(&packages, &bridge);
+        let search = content
+            .first_child()
+            .unwrap()
+            .downcast::<gtk4::SearchEntry>()
+            .unwrap();
+        window.set_child(Some(&content));
+        window.present();
+        spin_until(|| !descendants::<libadwaita::ActionRow>(content.upcast_ref()).is_empty());
+        let list = descendants::<gtk4::ListView>(content.upcast_ref())
+            .pop()
+            .unwrap();
+        assert_eq!(list.model().unwrap().n_items(), 2000);
+        assert!(
+            descendants::<libadwaita::ActionRow>(content.upcast_ref()).len() < 2000,
+            "the full inventory must not allocate a widget for every package"
+        );
+
+        search.set_text("PACKAGE-01999");
+        search.emit_by_name::<()>("search-changed", &[]);
+        spin_until(|| list.model().unwrap().n_items() == 1);
+        spin_until(|| {
+            descendants::<libadwaita::ActionRow>(content.upcast_ref())
+                .iter()
+                .any(|row| row.title() == "package-01999")
+        });
+        let row = descendants::<libadwaita::ActionRow>(content.upcast_ref())
+            .into_iter()
+            .find(|row| row.title() == "package-01999")
+            .unwrap();
+        row.emit_by_name::<()>("activated", &[]);
+        assert_eq!(opened.borrow().as_deref(), Some("package-01999"));
+        search.set_text("does-not-exist");
+        search.emit_by_name::<()>("search-changed", &[]);
+        assert_eq!(list.model().unwrap().n_items(), 0);
+        search.set_text("");
+        search.emit_by_name::<()>("search-changed", &[]);
+        assert_eq!(list.model().unwrap().n_items(), 2000);
+        window.set_child(gtk4::Widget::NONE);
+        window.close();
+    }
 }
