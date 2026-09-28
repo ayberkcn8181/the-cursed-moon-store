@@ -42,6 +42,7 @@ impl StoreWindow {
         let busy_ops: Rc<RefCell<std::collections::HashSet<tcms_core::PackageId>>> =
             Rc::new(RefCell::new(std::collections::HashSet::new()));
 
+        let pending_transactions = Rc::new(std::cell::Cell::new(0usize));
         let make_bridge = {
             let store = store.clone();
             let toast = toast_overlay.clone();
@@ -50,6 +51,7 @@ impl StoreWindow {
             let icons = icons.clone();
             let busy_ops = busy_ops.clone();
             let activity = activity.clone();
+            let pending_transactions = pending_transactions.clone();
             Rc::new(move |open_detail: OpenDetailFn| UiBridge {
                 store: store.clone(),
                 toast: toast.clone(),
@@ -65,6 +67,7 @@ impl StoreWindow {
                 window: window_gtk.clone(),
                 icons: icons.clone(),
                 busy: busy_ops.clone(),
+                pending_transactions: pending_transactions.clone(),
                 activity: activity.clone(),
             })
         };
@@ -273,20 +276,22 @@ impl StoreWindow {
                 let store_check = store_check.clone();
                 let toast_check = toast_check.clone();
                 let updates_page = updates_page.clone();
-                store_check.fetch_async(
-                    crate::store::ListKind::Updates,
-                    String::new(),
-                    move |pkgs| {
-                        if pkgs.is_empty() {
-                            return;
-                        }
-                        toast_check.add_toast(libadwaita::Toast::new(&tcms_core::i18n::t_args(
-                            "toast.updates_available",
-                            &[("n", &pkgs.len().to_string())],
-                        )));
+                store_check.fetch_updates_async(move |listing| {
+                    if !listing.errors.is_empty() {
+                        toast_check.add_toast(libadwaita::Toast::new(&t("updates.check_failed")));
                         updates_page.reload();
-                    },
-                );
+                        return;
+                    }
+                    let pkgs = listing.packages;
+                    if pkgs.is_empty() {
+                        return;
+                    }
+                    toast_check.add_toast(libadwaita::Toast::new(&tcms_core::i18n::t_args(
+                        "toast.updates_available",
+                        &[("n", &pkgs.len().to_string())],
+                    )));
+                    updates_page.reload();
+                });
                 glib::ControlFlow::Continue
             });
         }

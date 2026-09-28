@@ -104,7 +104,7 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
             let pkg_rm = installed.clone();
             remove_btn.connect_clicked(move |btn| {
                 btn.set_sensitive(false);
-                bridge_rm.run_action(tcms_core::PackageAction::Remove, &pkg_rm);
+                bridge_rm.run_action(tcms_core::PackageAction::Remove, &pkg_rm, btn);
             });
             actions.append(&remove_btn);
         } else {

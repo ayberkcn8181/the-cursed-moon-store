@@ -10,6 +10,7 @@ pub mod icons;
 pub mod matching;
 pub mod package;
 pub mod process;
+pub mod transactions;
 pub mod util;
 
 pub use backend::{Backend, BackendId, PackageAction, SearchQuery, SearchResult};

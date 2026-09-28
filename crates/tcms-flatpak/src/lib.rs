@@ -84,24 +84,41 @@ impl FlatpakBackend {
             .unwrap_or("flathub")
     }
 
-    async fn list_installed(&self) -> Result<Vec<Package>> {
-        let out = run(
-            "flatpak",
-            [
-                "list",
-                "--app",
-                self.install_flag(),
-                "--columns=application,name,version,description",
-            ],
-        )
-        .await?;
-        if !out.success() {
-            // empty install is fine
-            if out.stdout.trim().is_empty() {
-                return Ok(Vec::new());
-            }
-            out.ensure_success("flatpak list")?;
+    fn update_args(&self, id: Option<&str>) -> Vec<String> {
+        let mut args = vec!["update".into(), "-y".into(), self.install_flag().into()];
+        if let Some(id) = id {
+            args.extend(["--".into(), id.into()]);
         }
+        args
+    }
+
+    async fn update_refs(&self, id: Option<&str>) -> Result<()> {
+        self.ensure_enabled()?;
+        let args = self.update_args(id);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let out = if self.installation.eq_ignore_ascii_case("user") {
+            run("flatpak", &refs).await?
+        } else {
+            tcms_core::process::run_privileged("flatpak", &refs, "flatpak update").await?
+        };
+        out.ensure_success("flatpak update")
+    }
+
+    async fn list_installed(&self) -> Result<Vec<Package>> {
+        self.list_installed_refs(false).await
+    }
+
+    async fn list_installed_refs(&self, include_runtimes: bool) -> Result<Vec<Package>> {
+        let mut args = vec![
+            "list",
+            self.install_flag(),
+            "--columns=application,name,version,description",
+        ];
+        if !include_runtimes {
+            args.push("--app");
+        }
+        let out = run("flatpak", args).await?;
+        out.ensure_success("flatpak list")?;
 
         let updates = self.update_map().await.unwrap_or_default();
         let mut packages = Vec::new();
@@ -160,16 +177,13 @@ impl FlatpakBackend {
             [
                 "remote-ls",
                 "--updates",
-                "--app",
                 self.install_flag(),
                 "--columns=application,version",
             ],
         )
         .await?;
         let mut map = HashMap::new();
-        if !out.success() {
-            return Ok(map);
-        }
+        out.ensure_success("flatpak remote-ls --updates")?;
         for line in out.stdout.lines() {
             let cols: Vec<&str> = line.split('\t').collect();
             if cols.len() >= 2 {
@@ -382,13 +396,7 @@ impl FlatpakBackend {
                 )
                 .await?
             };
-            if !out.success() {
-                tracing::warn!(
-                    remote = %remote.name,
-                    stderr = %out.stderr,
-                    "failed to add flatpak remote"
-                );
-            }
+            out.ensure_success(&format!("flatpak remote-add {}", remote.name))?;
         }
         Ok(())
     }
@@ -421,8 +429,8 @@ impl Backend for FlatpakBackend {
     async fn refresh(&self) -> Result<()> {
         self.ensure_enabled()?;
         self.ensure_configured_remotes().await?;
-        let _ = run("flatpak", ["update", "--appstream", self.install_flag()]).await;
-        Ok(())
+        let out = run("flatpak", ["update", "--appstream", self.install_flag()]).await?;
+        out.ensure_success("flatpak appstream refresh")
     }
 
     async fn search(&self, query: &SearchQuery) -> Result<SearchResult> {
@@ -485,7 +493,7 @@ impl Backend for FlatpakBackend {
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
         let updates = self.update_map().await?;
-        let installed = self.list_installed().await?;
+        let installed = self.list_installed_refs(true).await?;
         Ok(installed
             .into_iter()
             .filter_map(|mut p| {
@@ -523,6 +531,21 @@ impl Backend for FlatpakBackend {
         };
         out.ensure_success(&format!("flatpak install {}", id.id))?;
         Ok(())
+    }
+
+    async fn update(&self, id: &PackageId) -> Result<()> {
+        if id.source != PackageSource::Flatpak {
+            return Err(Error::Message(format!(
+                "flatpak backend cannot update {id}"
+            )));
+        }
+        tcms_core::assert_safe_package_id(id)?;
+        self.update_refs(Some(&id.id)).await
+    }
+
+    async fn update_all(&self) -> Result<()> {
+        // No --app restriction: runtimes and related extensions must be updated too.
+        self.update_refs(None).await
     }
 
     async fn remove(&self, id: &PackageId) -> Result<()> {
@@ -589,6 +612,16 @@ fn summarize_flatpak_permissions(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn updates_use_update_and_include_runtimes_in_bulk() {
+        let backend = FlatpakBackend::new(true, "user", "flathub|https://example.com/repo");
+        assert_eq!(
+            backend.update_args(Some("org.example.App")),
+            ["update", "-y", "--user", "--", "org.example.App"]
+        );
+        assert_eq!(backend.update_args(None), ["update", "-y", "--user"]);
+    }
 
     #[test]
     fn summarize_permissions_extracts_sections() {

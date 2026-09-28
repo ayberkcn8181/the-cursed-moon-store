@@ -75,8 +75,8 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
             .build();
         let bridge_rm = bridge.clone();
         let pkg_rm = pkg.clone();
-        remove_btn.connect_clicked(move |_| {
-            bridge_rm.run_action(PackageAction::Remove, &pkg_rm);
+        remove_btn.connect_clicked(move |btn| {
+            bridge_rm.run_action(PackageAction::Remove, &pkg_rm, btn);
         });
         row.add_suffix(&remove_btn);
     }
@@ -169,7 +169,7 @@ fn action_button(
     let pkg_btn = pkg.clone();
     button.connect_clicked(move |btn| {
         btn.set_sensitive(false);
-        bridge_btn.run_action(action, &pkg_btn);
+        bridge_btn.run_action(action, &pkg_btn, btn);
     });
     button
 }

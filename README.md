@@ -32,12 +32,13 @@ Rust + GTK4 + libadwaita ile yazılmıştır. Pacman, Flatpak/Flathub ve AUR üz
 ## Gereksinimler
 
 - Arch Linux, CachyOS veya benzeri Arch tabanlı dağıtım
-- GTK 4, libadwaita
+- GTK 4.14+, libadwaita 1.6+
+- `pacman-contrib` — canlı paket veritabanını değiştirmeden güncelleme kontrolü
 - Rust toolchain (`rustup` / `cargo`) — kaynak koddan derlemek için
 - İsteğe bağlı: `flatpak`, `paru` veya `yay` (AUR)
 
 ```bash
-sudo pacman -S gtk4 libadwaita base-devel rust
+sudo pacman -Syu gtk4 libadwaita base-devel rust pacman-contrib
 # Flatpak / Flathub (önerilir)
 sudo pacman -S flatpak
 flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
@@ -117,6 +118,25 @@ makepkg -si
 | `tcms-app` | GTK arayüz — ikili adı: `the-cursed-moon-store` |
 
 ---
+
+## Paket işlemlerinin davranışı
+
+- Sistem paketi kurmak veya güncellemek, onayınızdan sonra `pacman -Syu` ile
+  bekleyen tüm sistem yükseltmelerini de uygular. Tek paketlik kısmi yükseltme yapılmaz.
+- Yenileme/güncelleme kontrolü `checkupdates` ile ayrı bir veritabanı kullanır;
+  sistemin canlı veritabanında yalnızca `-Sy` çalıştırılmaz.
+- Güvenli güncelleme kontrolü sistemin `/etc/pacman.conf` dosyasını kullanır.
+  Özel bir `pacman_conf` seçildiğinde desteklenmeyen kontrol açık hata verir;
+  kurma/kaldırma işlemleri seçilen yapılandırmayı kullanmaya devam eder.
+- Flatpak güncellemeleri `flatpak update` kullanır. Toplu işlem runtime ve
+  ilgili uzantıları da kapsar.
+- Paket değişiklikleri uygulama içinde sıraya alınır. Toplu güncelleme önce
+  sistemi, sonra Flatpak'i, ardından AUR'u işler. Sistem yükseltmesi başarısızsa
+  AUR aşaması atlanır; tamamlanan ve başarısız kaynaklar ayrı bildirilir.
+- DXVK geri alma yalnızca bilinen DLL/yedek yollarına erişir. İşlemler açılmış
+  prefix diziniyle sınırlıdır; değiştirilmiş durum dosyaları ve sembolik bağlantılar
+  reddedilir. İşlem öncesinde oyunları ve başlatıcıları kapatın.
+
 
 ## Katkı
 

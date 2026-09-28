@@ -65,10 +65,14 @@ pub trait Backend: Send + Sync {
     async fn updates(&self) -> Result<Vec<Package>>;
     async fn install(&self, id: &PackageId) -> Result<()>;
     async fn remove(&self, id: &PackageId) -> Result<()>;
+    async fn update(&self, id: &PackageId) -> Result<()>;
+    /// Upgrade this source in one transaction (including dependencies/runtimes).
+    async fn update_all(&self) -> Result<()>;
 
     async fn apply(&self, action: PackageAction, id: &PackageId) -> Result<()> {
         match action {
-            PackageAction::Install | PackageAction::Update => self.install(id).await,
+            PackageAction::Install => self.install(id).await,
+            PackageAction::Update => self.update(id).await,
             PackageAction::Remove => self.remove(id).await,
         }
     }

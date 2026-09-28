@@ -262,5 +262,14 @@
   "compat.path_heroic_flatpak": "Heroic Flatpak root",
   "compat.path_native_desc": "Native launcher data/configuration root",
   "compat.path_flatpak_desc": "Flatpak launcher data/configuration root",
-  "compat.save_settings": "Save Game Tool Settings"
+  "compat.save_settings": "Save Game Tool Settings",
+  "confirm.system_upgrade_title": "Full system upgrade",
+  "confirm.system_upgrade_body": "This operation also upgrades all pending system packages to keep Arch consistent. Review Arch update announcements before continuing.",
+  "updates.check_failed": "Some update sources could not be checked. The system may not be up to date.",
+  "updates.completed_sources": "Completed sources: {sources}",
+  "updates.finished": "Updates completed",
+  "updates.partial_failure": "Some updates failed or were skipped",
+  "action.close": "Close",
+  "transaction.pending": "{n} package operations running or queued",
+  "settings.bg_unavailable": "Background downloads are not implemented yet."
 }

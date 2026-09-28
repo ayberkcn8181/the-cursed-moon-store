@@ -176,7 +176,7 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     );
     let bg = switch_row(
         &t("settings.bg_download"),
-        &t("settings.bg_download_desc"),
+        &t("settings.bg_unavailable"),
         config.download_updates_in_background,
     );
     // Background download is not implemented yet — keep the preference for future use.
