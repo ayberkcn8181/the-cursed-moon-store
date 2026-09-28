@@ -112,6 +112,14 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
             actions.append(&remove_btn);
         }
         let open_btn = gtk4::Button::builder()
+            .visible(
+                installed.desktop_id.is_some()
+                    || installed
+                        .id
+                        .flatpak
+                        .as_ref()
+                        .is_some_and(|reference| reference.kind == "app"),
+            )
             .label(t("action.open"))
             .css_classes(["pill"])
             .build();

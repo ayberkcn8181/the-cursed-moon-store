@@ -16,7 +16,7 @@ search)
   if [ -f "$TCMS_FIXTURE_ROOT/fail" ]; then echo 'remote unavailable' >&2; exit 42; fi
   printf 'org.example.App\tExample\t1\tDescription\tstable\tflathub\norg.example.App\tExample\t2\tDescription\tbeta\ttesting\n';;
 list)
-  case " $* " in *' --runtime '*) exit 0;; esac
+  case " $* " in *' --runtime '*) printf 'org.example.Platform\tx86_64\tstable\tflathub\tExample Runtime\t1\tRuntime\n'; exit 0;; esac
   printf 'org.example.App\tx86_64\tstable\tflathub\tExample\t1\tDescription\norg.example.App\tx86_64\tbeta\ttesting\tExample Beta\t2\tDescription\n';;
 remote-ls)
   case " $* " in *' --runtime '*) exit 0;; esac
@@ -35,15 +35,16 @@ esac
     std::env::set_var("TCMS_FIXTURE_ROOT", &root);
     let mut backend = FlatpakBackend::new(true, "user", "flathub|https://example.org");
     let installed = backend.installed().await.unwrap();
-    assert_eq!(installed.len(), 2);
+    assert_eq!(installed.len(), 3);
+    assert_eq!(installed[2].id.flatpak.as_ref().unwrap().kind, "runtime");
     assert!(installed.iter().all(|p| p.state == InstallState::Installed));
     assert_eq!(
         fs::read_to_string(root.join("calls"))
             .unwrap()
             .lines()
             .count(),
-        1,
-        "installed list must never query remote updates"
+        2,
+        "installed list must query local apps and runtimes only"
     );
     let search = backend
         .search(&SearchQuery {
@@ -59,6 +60,13 @@ esac
     assert_eq!(updates[0].id, *beta);
     assert_eq!(updates[0].available_version.as_deref(), Some("3"));
     backend.set_installation("system");
+    let system = backend.installed().await.unwrap();
+    assert_eq!(system[0].id.id, installed[0].id.id);
+    assert_ne!(system[0].id, installed[0].id);
+    assert_eq!(
+        system[0].id.flatpak.as_ref().unwrap().installation.label(),
+        "system"
+    );
     backend.install(beta).await.unwrap();
     backend.update(beta).await.unwrap();
     backend.remove(beta).await.unwrap();

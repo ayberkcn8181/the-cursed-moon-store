@@ -182,7 +182,12 @@ impl FlatpakBackend {
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
         // Installed means local state; remote freshness belongs to Updates.
-        self.list_refs("app", false).await
+        let (mut apps, runtimes) = tokio::try_join!(
+            self.list_refs("app", false),
+            self.list_refs("runtime", false),
+        )?;
+        apps.extend(runtimes);
+        Ok(apps)
     }
 
     async fn search_remote(&self, text: &str) -> Result<Vec<Package>> {

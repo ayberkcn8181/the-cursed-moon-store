@@ -2,7 +2,7 @@
 
 pub mod desktop;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 static UPDATE_CHECK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -368,21 +368,22 @@ impl Backend for PacmanBackend {
 
     async fn installed(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
+        // The local database is authoritative. Desktop files only enrich it;
+        // command-line tools, libraries and packages without launchers count too.
+        let mut args = self.conf_args();
+        args.push("-Q".into());
+        let output = run("pacman", &args).await?;
+        output.ensure_success("pacman installed packages")?;
+        let mut packages = parse_installed(&output.stdout)?;
         let updates = self.query_updates().await.unwrap_or_default();
-        let apps = discover_desktop_apps().await?;
-        let mut seen = HashSet::new();
-        let mut packages = Vec::new();
-        for app in apps {
-            if app.is_flatpak {
-                continue;
+        let apps = match discover_desktop_apps().await {
+            Ok(apps) => apps,
+            Err(error) => {
+                tracing::warn!(%error, "desktop metadata unavailable; keeping local package inventory");
+                Vec::new()
             }
-            let Some(pkg) = Self::package_from_desktop(&app, &updates) else {
-                continue;
-            };
-            if seen.insert(pkg.id.id.clone()) {
-                packages.push(pkg);
-            }
-        }
+        };
+        enrich_installed(&mut packages, &apps, &updates);
         packages.sort_by_key(|a| a.name.to_lowercase());
         Ok(packages)
     }
@@ -476,6 +477,52 @@ impl Backend for PacmanBackend {
     }
 }
 
+fn parse_installed(output: &str) -> Result<Vec<Package>> {
+    output
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() != 2 {
+                return Err(Error::Message(format!(
+                    "Unexpected pacman -Q output: {line}"
+                )));
+            }
+            Ok(Package::stub(
+                PackageSource::Pacman,
+                fields[0],
+                fields[0],
+                "",
+                fields[1],
+                InstallState::Installed,
+            ))
+        })
+        .collect()
+}
+
+fn enrich_installed(
+    packages: &mut [Package],
+    apps: &[DesktopApp],
+    updates: &HashMap<String, String>,
+) {
+    let mut desktop = HashMap::new();
+    for app in apps.iter().filter(|app| !app.is_flatpak) {
+        if let Some(pkg) = PacmanBackend::package_from_desktop(app, updates) {
+            desktop.entry(pkg.id.id.clone()).or_insert(pkg);
+        }
+    }
+    for package in packages {
+        if let Some(mut app) = desktop.remove(&package.id.id) {
+            app.version = package.version.clone();
+            *package = app;
+        }
+        if let Some(version) = updates.get(&package.id.id) {
+            package.available_version = Some(version.clone());
+            package.state = InstallState::Updatable;
+        }
+    }
+}
+
 fn parse_checkupdates(out: &tcms_core::process::CommandOutput) -> Result<HashMap<String, String>> {
     if out.status == 2 {
         return Ok(HashMap::new());
@@ -557,6 +604,40 @@ fn parse_package_info(stdout: &str) -> PacmanInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_inventory_keeps_packages_without_desktop_entries() {
+        let mut packages =
+            parse_installed("bash 5.3-1\nlinux 6.17-1\nexample 2.0-1\nlibexample 1.2-1\n").unwrap();
+        let app = DesktopApp {
+            desktop_id: "example.desktop".into(),
+            name: "Example GUI".into(),
+            comment: Some("Example application".into()),
+            icon: Some("example".into()),
+            categories: vec!["Utility".into()],
+            package_name: Some("example".into()),
+            version: Some("stale version".into()),
+            is_flatpak: false,
+            desktop_path: "/usr/share/applications/example.desktop".into(),
+        };
+        enrich_installed(&mut packages, &[app], &HashMap::new());
+        assert_eq!(packages.len(), 4);
+        assert_eq!(packages[2].name, "Example GUI");
+        assert_eq!(packages[2].version, "2.0-1");
+        assert_eq!(packages[2].desktop_id.as_deref(), Some("example.desktop"));
+        assert_eq!(packages[0].id.id, "bash");
+        assert_eq!(packages[3].id.id, "libexample");
+        assert!(packages
+            .iter()
+            .all(|package| package.state == InstallState::Installed));
+    }
+
+    #[test]
+    fn inventory_rejects_malformed_query_rows() {
+        assert!(parse_installed("missing-version\n").is_err());
+        assert!(parse_installed("name 1 unexpected\n").is_err());
+        assert!(parse_installed("").unwrap().is_empty());
+    }
 
     #[test]
     fn checkupdates_distinguishes_empty_results_from_failure() {

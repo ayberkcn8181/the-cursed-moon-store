@@ -55,6 +55,17 @@ async fn real_pacman_installs_queries_and_removes_an_isolated_fixture() {
     assert!(root.join("root/usr/share/tcms-smoke/marker").is_file());
     assert!(!Path::new("/usr/share/tcms-smoke/marker").exists());
     let backend = tcms_pacman::PacmanBackend::new(true, conf, "");
+    let inventory = backend.installed().await.unwrap();
+    let installed = inventory
+        .iter()
+        .find(|package| package.id.id == "tcms-smoke")
+        .unwrap();
+    assert_eq!(installed.version, "1.0-1");
+    assert_eq!(installed.state, InstallState::Installed);
+    assert!(
+        installed.desktop_id.is_none(),
+        "fixture intentionally has no desktop entry"
+    );
     let package = backend
         .get_package(&PackageId::new(PackageSource::Pacman, "tcms-smoke"))
         .await

@@ -4,7 +4,7 @@ use gtk4::{Box as GtkBox, Orientation, Spinner};
 use tcms_core::i18n::{t, t_args};
 
 use crate::store::{ListKind, UiBridge};
-use crate::widgets::{package_list, page_shell};
+use crate::widgets::{installed_package_list, page_shell};
 
 pub struct InstalledPage {
     pub root: GtkBox,
@@ -77,7 +77,7 @@ impl InstalledPage {
                         .css_classes(["dim-label"])
                         .build();
                     list_host.append(&label);
-                    list_host.append(&package_list(&packages, &bridge));
+                    list_host.append(&installed_package_list(&packages, &bridge));
                 }
             });
     }
