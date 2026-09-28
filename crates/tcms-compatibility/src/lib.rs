@@ -1,13 +1,43 @@
 //! Compatibility-tool discovery and management for Linux game launchers.
 
+mod archive;
 pub mod dxvk;
 pub mod heroic;
 pub mod lutris;
 mod model;
 mod releases;
 mod safety;
+mod staging;
 pub mod steam;
 pub mod vdf;
+
+#[cfg(test)]
+mod test_support {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(crate) struct TempRoot(pub PathBuf);
+
+    impl TempRoot {
+        pub(crate) fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "tcms-archive-test-{}-{}-{}",
+                std::process::id(),
+                crate::safety::timestamp(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TempRoot {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+}
 
 use std::fs;
 use std::path::{Path, PathBuf};

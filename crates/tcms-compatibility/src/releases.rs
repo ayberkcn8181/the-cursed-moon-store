@@ -4,13 +4,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use flate2::read::GzDecoder;
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256, Sha512};
-use xz2::read::XzDecoder;
 
+use crate::archive::{self, Compression};
 use crate::model::{LauncherInstallation, ToolRelease};
-use crate::safety::{archive_path_is_safe, safe_component, timestamp};
+use crate::safety::safe_component;
+use crate::staging::Stage;
 
 const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const GE_PROTON_RELEASES: &str =
@@ -18,12 +18,6 @@ const GE_PROTON_RELEASES: &str =
 const WINE_GE_RELEASES: &str =
     "https://api.github.com/repos/GloriousEggroll/wine-ge-custom/releases";
 const DXVK_RELEASES: &str = "https://api.github.com/repos/doitsujin/dxvk/releases";
-
-#[derive(Clone, Copy)]
-enum Compression {
-    Gzip,
-    Xz,
-}
 
 pub async fn proton_ge_releases(limit: usize) -> Result<Vec<ToolRelease>> {
     releases(GE_PROTON_RELEASES, ".tar.gz", limit, false).await
@@ -148,42 +142,21 @@ async fn install_release(
         .context("release does not contain a supported archive")?;
     validate_github_asset_url(&asset.browser_download_url)?;
 
-    fs::create_dir_all(target_root)?;
-    let stage = target_root.join(format!(
-        ".tcms-stage-{}-{}",
-        std::process::id(),
-        timestamp()
-    ));
-    if stage.exists() {
-        fs::remove_dir_all(&stage)?;
-    }
-    fs::create_dir_all(&stage)?;
-    let archive_path = stage.join("artifact");
-    let result = async {
-        download(&asset.browser_download_url, asset.size, &archive_path).await?;
-        verify_release_digest(release, asset, &archive_path, &stage).await?;
-        extract_archive(&archive_path, &stage, compression)?;
-        fs::remove_file(&archive_path)?;
+    let target_name = safe_component(&release.tag_name)?;
+    let stage = Stage::create(target_root)?;
+    let archive_path = stage.path.join("artifact");
+    download(&asset.browser_download_url, asset.size, &archive_path).await?;
+    verify_release_digest(release, asset, &archive_path, &stage.path).await?;
 
-        let extracted = extracted_root(&stage, marker)?;
-        let target_name = safe_component(&release.tag_name)?;
-        let target = target_root.join(target_name);
-        if target.exists() {
-            bail!("{} is already installed", release.tag_name);
-        }
-        if extracted == stage {
-            fs::rename(&stage, &target)?;
-        } else {
-            fs::rename(&extracted, &target)?;
-            fs::remove_dir_all(&stage)?;
-        }
-        Ok(target)
-    }
-    .await;
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&stage);
-    }
-    result
+    let extraction_dir = stage.dir.try_clone()?;
+    let marker = marker.to_owned();
+    let extracted = tokio::task::spawn_blocking(move || {
+        archive::extract(&extraction_dir, compression, &marker)
+    })
+    .await
+    .context("archive extraction worker failed")??;
+    stage.publish(&extracted, target_name)?;
+    Ok(target_root.join(target_name))
 }
 
 async fn verify_release_digest(
@@ -285,7 +258,10 @@ async fn download(url: &str, expected_size: u64, destination: &Path) -> Result<(
     {
         bail!("artifact exceeds the download size limit");
     }
-    let mut file = File::create(destination)?;
+    let mut file = File::options()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
     let mut downloaded = 0_u64;
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -303,50 +279,6 @@ async fn download(url: &str, expected_size: u64, destination: &Path) -> Result<(
         bail!("download size mismatch: expected {expected_size}, received {downloaded}");
     }
     Ok(())
-}
-
-fn extract_archive(
-    archive_path: &Path,
-    destination: &Path,
-    compression: Compression,
-) -> Result<()> {
-    match compression {
-        Compression::Gzip => extract_tar(GzDecoder::new(File::open(archive_path)?), destination),
-        Compression::Xz => extract_tar(XzDecoder::new(File::open(archive_path)?), destination),
-    }
-}
-
-fn extract_tar(reader: impl Read, destination: &Path) -> Result<()> {
-    let mut archive = tar::Archive::new(reader);
-    for item in archive.entries()? {
-        let mut entry = item?;
-        let kind = entry.header().entry_type();
-        if !(kind.is_file() || kind.is_dir()) {
-            bail!("archive contains a link or unsupported entry");
-        }
-        let path = entry.path()?;
-        if !archive_path_is_safe(&path) {
-            bail!("archive contains an unsafe path");
-        }
-        if !entry.unpack_in(destination)? {
-            bail!("archive entry escaped the installation directory");
-        }
-    }
-    Ok(())
-}
-
-fn extracted_root(stage: &Path, marker: &str) -> Result<PathBuf> {
-    if stage.join(marker).is_file() {
-        return Ok(stage.to_path_buf());
-    }
-    let children: Vec<PathBuf> = fs::read_dir(stage)?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_dir())
-        .collect();
-    if children.len() != 1 || !children[0].join(marker).is_file() {
-        bail!("archive does not contain one valid compatibility tool");
-    }
-    Ok(children[0].clone())
 }
 
 fn validate_github_asset_url(url: &str) -> Result<()> {

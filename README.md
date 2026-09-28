@@ -26,6 +26,7 @@ Rust + GTK4 + libadwaita ile yazılmıştır. Pacman, Flatpak/Flathub ve AUR üz
 | **Detay** | Kaynaklar, izinler, lisans, bağış, hata bildirimi, **Aç** |
 | **Dil** | Türkçe, İngilizce, Rusça, Fransızca, Korece, Japonca, Çince, Portekizce, İtalyanca (+ sistem dili) |
 | **Gelişmiş** | `pacman.conf`, Flatpak remote’lar, AUR helper, ham config |
+| **Uyumluluk araçları** | Proton-GE, Wine-GE ve DXVK kurulumu; Steam, Lutris ve Heroic keşfi |
 
 ---
 
@@ -115,6 +116,7 @@ makepkg -si
 | `tcms-pacman` | Sistem deposu (pacman) |
 | `tcms-flatpak` | Flatpak / Flathub |
 | `tcms-aur` | AUR (`paru` / `yay`) |
+| `tcms-compatibility` | Proton/Wine/DXVK ve oyun başlatıcıları |
 | `tcms-app` | GTK arayüz — ikili adı: `the-cursed-moon-store` |
 
 ---
@@ -137,6 +139,24 @@ makepkg -si
   prefix diziniyle sınırlıdır; değiştirilmiş durum dosyaları ve sembolik bağlantılar
   reddedilir. İşlem öncesinde oyunları ve başlatıcıları kapatın.
 
+
+### Uyumluluk arşivleri
+
+Proton/Wine/DXVK arşivleri özel bir geçici dizinde doğrulanır. Araç dizini
+içindeki mevcut hedeflere giden göreli sembolik bağlantılar ve normal dosyalara
+giden hard link'ler desteklenir. Dizin dışına çıkan, döngü oluşturan veya hedefi
+bulunmayan bağlantılar; aygıt dosyaları, sparse dosyalar, global PAX başlıkları
+ve PAX boyut geçersiz kılmaları reddedilir. GNU uzun adlar ve PAX yolları desteklenir.
+
+İndirme sınırı 1 GiB; açılmış arşiv sınırı 8 GiB, tek dosya sınırı 4 GiB ve
+girdi sınırı 100.000'dir (oluşturulan üst dizinler de sayılır). Ek başlıklar
+tek başına 64 KiB, toplamda 8 MiB ile; XZ çözücüsü 256 MiB bellekle sınırlıdır.
+Arşiv iki geçişte okunur: önce boyut/tür kontrolleri, sonra dosya çıkarma.
+Bu işlem ek açma süresi gerektirir; açılmış tar kopyası diskte tutulmaz.
+
+Kurulum yalnızca bütün kontroller geçtikten sonra tek bir yeniden adlandırmayla
+yayımlanır. Aynı sürüm zaten varsa veya eşzamanlı başka bir kurulum önce
+tamamlanırsa mevcut dizin korunur. Başarısız işlemin geçici dosyaları temizlenir.
 
 ## Katkı
 

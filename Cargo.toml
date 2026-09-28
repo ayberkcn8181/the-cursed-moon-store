@@ -41,6 +41,7 @@ sha2 = "0.10"
 tar = "0.4"
 xz2 = "0.1"
 cap-std = "4"
+rustix = { version = "1", features = ["fs"] }
 gtk4 = { version = "0.10", features = ["v4_14"] }
 libadwaita = { version = "0.8", features = ["v1_6"] }
 glib = "0.21"
