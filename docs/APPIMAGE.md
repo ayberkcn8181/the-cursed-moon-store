@@ -2,7 +2,7 @@
 
 The x86_64 AppImage is an alternative download for current Arch Linux and
 Arch-based distributions. It includes GTK4, libadwaita, their non-system library
-dependencies, icons, GLib schemas and image loaders. It uses the host's glibc,
+dependencies, icons, GLib schemas and GdkPixbuf modules. It uses the host's glibc,
 graphics drivers, fonts and desktop session. Builds use a fully updated Arch
 container; older distributions and glibc versions are not supported.
 
@@ -26,7 +26,13 @@ If FUSE mounting is unavailable:
 The store still needs the host's `pacman` and `checkupdates` (`pacman-contrib`),
 `flatpak` for Flatpak support, and `pkexec` (`polkit`) with an authentication agent
 for system transactions. AUR installs require `paru` or `yay` and their build
-dependencies. These tools and the system package database are not bundled.
+dependencies. Current Arch image decoding also uses the host's `glycin` package
+and its `bubblewrap` sandbox. These helper programs and the system package
+database are not bundled. On a minimal desktop, install the host tools first:
+
+```bash
+sudo pacman -Syu --needed pacman-contrib flatpak polkit glycin
+```
 Do not run the entire AppImage with sudo.
 
 Wayland and X11 are selected by GTK using the current desktop session. The

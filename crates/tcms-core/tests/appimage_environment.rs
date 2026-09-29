@@ -7,6 +7,7 @@ fn subprocess_restores_host_environment() {
     let output = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "host_command_child", "--nocapture"])
         .env("TCMS_APPIMAGE", "1")
+        .env("TCMS_RELEASE_TAG", "fixture")
         .env("APPDIR", "/bundle")
         .env("LD_LIBRARY_PATH", "/bundle/lib")
         .env_remove("TCMS_HOST_LD_LIBRARY_PATH")
@@ -34,6 +35,8 @@ async fn host_command_child() {
     assert!(!lines
         .iter()
         .any(|line| line.starts_with("LD_LIBRARY_PATH=")));
-    assert!(!lines.iter().any(|line| line.starts_with("TCMS_")));
+    assert!(!lines.iter().any(|line| line.starts_with("TCMS_HOST_")));
+    assert!(!lines.iter().any(|line| line.starts_with("TCMS_APPIMAGE=")));
+    assert!(lines.contains(&"TCMS_RELEASE_TAG=fixture"));
     assert!(!lines.iter().any(|line| line.starts_with("APPDIR=")));
 }

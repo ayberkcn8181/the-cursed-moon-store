@@ -53,7 +53,7 @@ chmod +x ./the-cursed-moon-store-*-x86_64.AppImage &&
 ./the-cursed-moon-store-*-x86_64.AppImage
 ```
 
-The AppImage bundles the graphical libraries and runs without installing the store. It targets **up-to-date Arch-based x86_64 systems** and uses the host's pacman, Flatpak, AUR helper and Polkit. It does not add support for other distributions' package managers.
+The AppImage bundles the graphical libraries and runs without installing the store. It targets **up-to-date Arch-based x86_64 systems** and uses the host's pacman, Flatpak, AUR helper, Polkit and Glycin image decoders. It does not add support for other distributions' package managers.
 
 If FUSE mounting is unavailable, run the file with `--appimage-extract-and-run`. To update the store itself, close it and replace the AppImage with the new release. See [AppImage details](docs/APPIMAGE.md).
 
