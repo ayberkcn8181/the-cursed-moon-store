@@ -16,14 +16,14 @@ appdir="$work/squashfs-root"
 test "$("$appdir/AppRun" --version)" = "The Cursed Moon Store $version"
 LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/the-cursed-moon-store" > ldd.txt
 cat ldd.txt
-! grep -q 'not found' ldd.txt
+if grep -q 'not found' ldd.txt; then exit 1; fi
 for library in libgtk-4.so libadwaita-1.so libglib-2.0.so; do
   grep -F "$appdir/usr/lib/$library" ldd.txt
 done
 
 Xvfb :98 -screen 0 1280x800x24 -nolisten tcp > xvfb.log 2>&1 &
 xvfb_pid=$!
-for attempt in 1 2 3 4 5; do
+for _ in 1 2 3 4 5; do
   test -S /tmp/.X11-unix/X98 && break
   sleep 1
 done

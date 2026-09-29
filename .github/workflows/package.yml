@@ -51,7 +51,7 @@ jobs:
           test "$(the-cursed-moon-store --version)" = "The Cursed Moon Store $tcms_version"
           ldd /usr/bin/the-cursed-moon-store > /tmp/tcms-ldd.txt
           cat /tmp/tcms-ldd.txt
-          ! grep -q 'not found' /tmp/tcms-ldd.txt
+          if grep -q 'not found' /tmp/tcms-ldd.txt; then exit 1; fi
           desktop-file-validate /usr/share/applications/com.cursedmoon.Store.desktop
           xmllint --noout /usr/share/metainfo/com.cursedmoon.Store.metainfo.xml
           xmllint --noout /usr/share/polkit-1/actions/com.cursedmoon.Store.policy
