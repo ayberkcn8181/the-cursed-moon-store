@@ -143,10 +143,9 @@ pub fn resolve_program(program: &str) -> PathBuf {
 }
 
 fn which_sync(program: &str) -> std::result::Result<PathBuf, ()> {
-    let output = std::process::Command::new("which")
-        .arg(program)
-        .output()
-        .map_err(|_| ())?;
+    let mut command = std::process::Command::new("which");
+    crate::host_environment::apply(&mut command);
+    let output = command.arg(program).output().map_err(|_| ())?;
     if !output.status.success() {
         return Err(());
     }
@@ -202,6 +201,7 @@ where
     I::Item: AsRef<OsStr>,
 {
     let mut cmd = Command::new(program.as_ref());
+    crate::host_environment::apply(cmd.as_std_mut());
     cmd.args(args)
         .env("LANG", "C")
         .env("LC_ALL", "C")
@@ -254,6 +254,7 @@ pub async fn run_privileged(program: &str, args: &[&str], context: &str) -> Resu
 
     if let Some(pkexec) = pkexec_path() {
         let mut cmd = Command::new(&pkexec);
+        crate::host_environment::apply(cmd.as_std_mut());
         cmd.arg(&program_os).args(args);
         inherit_gui_env(&mut cmd);
         // Keep user's locale for Polkit dialog text; only force C for pacman parsers elsewhere.

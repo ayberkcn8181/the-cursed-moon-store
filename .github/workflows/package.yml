@@ -1,4 +1,4 @@
-name: Arch package and release
+name: Packages and release
 
 on:
   pull_request:
@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: arch-package-${{ github.ref }}
-  cancel-in-progress: false
+  group: packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   package:
@@ -24,13 +24,17 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             rust git python gtk4 libadwaita xz pacman-contrib flatpak polkit \
-            desktop-file-utils libxml2 shellcheck
+            desktop-file-utils libxml2 shellcheck curl patchelf adwaita-icon-theme \
+            xorg-server-xvfb dbus
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Test release preparation
-        run: python scripts/test_prepare_release.py
+        run: |
+          python scripts/test_prepare_release.py
+          python scripts/test_apprun.py
+          shellcheck packaging/appimage/AppRun scripts/build-appimage.sh scripts/test-appimage.sh
       - name: Create unprivileged package builder
         run: |
           useradd --create-home builder
@@ -52,16 +56,26 @@ jobs:
           xmllint --noout /usr/share/metainfo/com.cursedmoon.Store.metainfo.xml
           xmllint --noout /usr/share/polkit-1/actions/com.cursedmoon.Store.policy
           test -s /usr/share/licenses/the-cursed-moon-store/LICENSE
+      - name: Build AppImage from the validated executable
+        run: runuser -u builder -- bash scripts/build-appimage.sh
+      - name: Check AppImage extraction, relocation and GTK startup
+        run: runuser -u builder -- bash scripts/test-appimage.sh dist/*.AppImage
+      - name: Include AppImage in release checksums
+        working-directory: dist
+        run: |
+          sha256sum -- *.pkg.tar.zst *.AppImage *.tar.gz PKGBUILD SRCINFO SOURCE_COMMIT > SHA256SUMS
+          sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: arch-package-${{ github.sha }}
+          name: packages-${{ github.sha }}
           if-no-files-found: error
           include-hidden-files: true
           path: |
+            dist/*.AppImage
             dist/*.pkg.tar.zst
             dist/*.tar.gz
             dist/PKGBUILD
-            dist/.SRCINFO
+            dist/SRCINFO
             dist/SHA256SUMS
             dist/SOURCE_COMMIT
 
@@ -74,7 +88,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: arch-package-${{ github.sha }}
+          name: packages-${{ github.sha }}
           path: dist
       - name: Verify release files
         working-directory: dist
@@ -88,5 +102,5 @@ jobs:
           gh release create "$TCMS_RELEASE_TAG" \
             --verify-tag --title "The Cursed Moon Store $TCMS_RELEASE_TAG" \
             --generate-notes \
-            dist/*.pkg.tar.zst dist/*.tar.gz dist/PKGBUILD dist/.SRCINFO \
+            dist/*.pkg.tar.zst dist/*.AppImage dist/*.tar.gz dist/PKGBUILD dist/SRCINFO \
             dist/SHA256SUMS dist/SOURCE_COMMIT

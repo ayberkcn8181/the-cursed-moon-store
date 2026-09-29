@@ -1,3 +1,4 @@
+mod host_launch;
 mod icon_loader;
 mod pages;
 mod store;
