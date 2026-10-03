@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "AppImage smoke test failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 cd "$(dirname "$0")/.."
 image=$(realpath "$1")
 version=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-test "$("$image" --appimage-extract-and-run --version)" = "The Cursed Moon Store $version"
+actual_version=$("$image" --appimage-extract-and-run --version)
+printf 'Runtime launch version: %s\n' "$actual_version"
+test "$actual_version" = "The Cursed Moon Store $version"
 work=$(mktemp -d --suffix=' tcms smoke')
 cleanup() {
   if [[ -n ${xvfb_pid:-} ]]; then kill "$xvfb_pid" || true; fi
@@ -13,8 +16,13 @@ trap cleanup EXIT
 cd "$work"
 "$image" --appimage-extract > /dev/null
 appdir="$work/squashfs-root"
-test "$("$appdir/AppRun" --version)" = "The Cursed Moon Store $version"
-LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/the-cursed-moon-store" > ldd.txt
+actual_version=$("$appdir/AppRun" --version)
+printf 'Relocated launch version: %s\n' "$actual_version"
+test "$actual_version" = "The Cursed Moon Store $version"
+if ! LD_LIBRARY_PATH="$appdir/usr/lib" ldd "$appdir/usr/bin/the-cursed-moon-store" > ldd.txt 2>&1; then
+  cat ldd.txt >&2
+  exit 1
+fi
 cat ldd.txt
 if grep -q 'not found' ldd.txt; then exit 1; fi
 for library in libgtk-4.so libadwaita-1.so libglib-2.0.so; do
