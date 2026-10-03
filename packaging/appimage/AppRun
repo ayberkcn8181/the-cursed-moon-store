@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+APPDIR="${APPDIR:-$(cd -- "$(dirname -- "$0")" && pwd)}"
+export APPDIR
+
+# Remember unset versus empty values. Rust and GIO restore these for every host
+# command/application; never change the process-wide environment from a thread.
+while IFS= read -r key; do
+  saved="TCMS_HOST_$key"
+  unset "$saved"
+  if [[ -v $key ]]; then
+    export "$saved=${!key}"
+  fi
+done < "$APPDIR/usr/share/the-cursed-moon-store/environment.keys"
+export TCMS_APPIMAGE=1
+
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_DATA_DIRS="$APPDIR/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"
+export GTK_DATA_PREFIX="$APPDIR/usr"
+export GTK_EXE_PREFIX="$APPDIR/usr"
+export GTK_PATH="$APPDIR/usr/lib/gtk-4.0"
+export GDK_PIXBUF_MODULE_FILE="$APPDIR/usr/lib/loaders.cache"
+export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib"
+export GIO_MODULE_DIR="$APPDIR/usr/lib/gio/modules"
+unset GIO_EXTRA_MODULES
+# Keep the host PATH and Wayland/X11 choice. System tools are never bundled.
+exec "$APPDIR/usr/bin/the-cursed-moon-store" "$@"

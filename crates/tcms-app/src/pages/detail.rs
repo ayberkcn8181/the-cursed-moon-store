@@ -453,8 +453,9 @@ fn deliver_bug_report(bridge: &UiBridge, pkg: &Package, user_report: &str) {
 }
 
 fn launch_uri(window: &impl IsA<gtk4::Window>, uri: &str) -> bool {
-    let launcher = gtk4::UriLauncher::new(uri);
-    launcher.launch(Some(window), gio::Cancellable::NONE, |_| {});
+    let context =
+        crate::host_launch::context(Some(&gtk4::prelude::WidgetExt::display(window.as_ref())));
+    gio::AppInfo::launch_default_for_uri_async(uri, Some(&context), gio::Cancellable::NONE, |_| {});
     true
 }
 

@@ -24,7 +24,7 @@ A graphical software center for **Arch Linux and Arch-based distributions**, bui
 ## Requirements
 
 - An up-to-date Arch-based system; prebuilt packages target **x86_64**.
-- GTK 4.14+ and libadwaita 1.6+.
+- GTK 4.14+ and libadwaita 1.6+ (included in the AppImage).
 - A desktop session with a Polkit authentication agent for system package operations.
 - Optional: a configured helper such as `paru` or `yay` for building and installing AUR packages.
 
@@ -32,7 +32,7 @@ The Arch package declares its runtime dependencies, which pacman resolves during
 
 ## Installation
 
-### Download a release
+### Arch package
 
 Download the **`.pkg.tar.zst`** asset and **`SHA256SUMS`** from [GitHub Releases](https://github.com/ayberkcn8181/the-cursed-moon-store/releases/latest) into a new directory. From that directory, run:
 
@@ -42,6 +42,20 @@ sudo pacman -U ./the-cursed-moon-store-*.pkg.tar.zst
 ```
 
 GitHub's **Source code (zip)** and **Source code (tar.gz)** downloads contain source files for building the project.
+
+### AppImage
+
+Download the **`.AppImage`** asset and **`SHA256SUMS`** from the same release into a new directory, then run:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS &&
+chmod +x ./the-cursed-moon-store-*-x86_64.AppImage &&
+./the-cursed-moon-store-*-x86_64.AppImage
+```
+
+The AppImage bundles the graphical libraries and runs without installing the store. It targets **up-to-date Arch-based x86_64 systems** and uses the host's pacman, Flatpak, AUR helper, Polkit and Glycin image decoders. It does not add support for other distributions' package managers.
+
+If FUSE mounting is unavailable, run the file with `--appimage-extract-and-run`. To update the store itself, close it and replace the AppImage with the new release. See [AppImage details](docs/APPIMAGE.md).
 
 ### Build from source
 
@@ -80,7 +94,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 ```
 
-For package maintenance, AUR submission and migration from a manual installation, see the [release guide](docs/RELEASING.md) (Turkish). The development package recipe is available in [packaging/aur](packaging/aur/the-cursed-moon-store-git/PKGBUILD).
+For package maintenance and migration from a manual installation, see the [release guide](docs/RELEASING.md) (Turkish). AUR publication is currently on hold; the development recipe remains available in [packaging/aur](packaging/aur/the-cursed-moon-store-git/PKGBUILD).
 
 ## License
 

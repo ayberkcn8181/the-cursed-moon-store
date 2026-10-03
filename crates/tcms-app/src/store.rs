@@ -1200,7 +1200,8 @@ fn launch_package(
             let scope = &pkg.id.flatpak.as_ref().unwrap().installation;
             let args = ["flatpak", "run", scope.flag(), reference.as_str()];
             let args: Vec<_> = args.iter().map(std::ffi::OsStr::new).collect();
-            let process = gio::Subprocess::newv(&args, gio::SubprocessFlags::NONE)
+            let process = crate::host_launch::subprocess_launcher()
+                .spawn(&args)
                 .map_err(|e| e.to_string())?;
             process.wait_check_async(gio::Cancellable::NONE, on_exit);
             Ok(())
@@ -1212,8 +1213,8 @@ fn launch_package(
                 .ok_or_else(|| "desktop entry unavailable".to_string())?;
             let info = gio::DesktopAppInfo::new(id)
                 .ok_or_else(|| format!("desktop entry not found: {id}"))?;
-            info.launch(&[], gio::AppLaunchContext::NONE)
-                .map_err(|e| e.to_string())
+            let context = crate::host_launch::context(gtk4::gdk::Display::default().as_ref());
+            info.launch(&[], Some(&context)).map_err(|e| e.to_string())
         }
     }
 }

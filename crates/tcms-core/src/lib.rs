@@ -5,6 +5,7 @@ pub mod classify;
 pub mod config;
 pub mod error;
 pub mod featured;
+pub mod host_environment;
 pub mod i18n;
 pub mod icons;
 pub mod matching;
