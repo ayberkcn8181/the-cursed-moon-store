@@ -36,7 +36,9 @@ pixbuf_modules=(/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.so)
 for module in "${pixbuf_modules[@]}" /usr/lib/gio/modules/*.so; do
   libraries+=(--library "$module")
 done
-"$work/linuxdeploy.AppImage" --appdir "$appdir" \
+# makepkg and the Arch repositories already strip these binaries. The older
+# strip bundled with linuxdeploy cannot read modern Arch RELR sections.
+NO_STRIP=1 "$work/linuxdeploy.AppImage" --appdir "$appdir" \
   --executable "$binary" \
   --desktop-file data/com.cursedmoon.Store.desktop \
   --icon-file data/icons/hicolor/scalable/apps/com.cursedmoon.Store.svg \
