@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "AppImage build failed at line $LINENO" >&2' ERR
 cd "$(dirname "$0")/.."
 
 if [[ $(uname -m) != x86_64 || $(id -u) == 0 ]]; then
@@ -30,7 +31,8 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 libraries=()
 shopt -s nullglob
 pixbuf_modules=(/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/*.so)
-test "${#pixbuf_modules[@]}" -gt 0
+# Modern Arch uses Glycin and may ship no legacy GdkPixbuf modules.
+# Bundle optional modules when present; an empty directory is valid.
 for module in "${pixbuf_modules[@]}" /usr/lib/gio/modules/*.so; do
   libraries+=(--library "$module")
 done
@@ -42,8 +44,11 @@ done
 
 # linuxdeploy places module libraries alongside their dependencies in usr/lib.
 # Relative loader names resolve through AppRun's library path after relocation.
-/usr/bin/gdk-pixbuf-query-loaders "${pixbuf_modules[@]}" | \
-  sed 's|"/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/|"|g' > "$appdir/usr/lib/loaders.cache"
+: > "$appdir/usr/lib/loaders.cache"
+if (( ${#pixbuf_modules[@]} > 0 )); then
+  /usr/bin/gdk-pixbuf-query-loaders "${pixbuf_modules[@]}" | \
+    sed 's|"/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders/|"|g' > "$appdir/usr/lib/loaders.cache"
+fi
 for module in /usr/lib/gio/modules/*.so; do
   ln -s "../../$(basename "$module")" "$appdir/usr/lib/gio/modules/$(basename "$module")"
 done
