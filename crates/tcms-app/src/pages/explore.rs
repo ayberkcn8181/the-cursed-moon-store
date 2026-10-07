@@ -8,7 +8,7 @@ use tcms_core::i18n::t;
 use tcms_core::Package;
 
 use crate::store::{ListKind, UiBridge};
-use crate::widgets::{featured_view, package_list, page_shell};
+use crate::widgets::{featured_view, page_shell, paged_package_list};
 
 const CATEGORIES: &[(&str, &str)] = &[
     ("", "category.all"),
@@ -112,6 +112,8 @@ impl ExplorePage {
 
         let category_s = category.clone();
         search.connect_search_changed(move |entry| {
+            bridge.store.cancel_search();
+            request_id.set(request_id.get() + 1);
             let text = entry.text().to_string();
             let tick = debounce.get() + 1;
             debounce.set(tick);
@@ -186,6 +188,7 @@ fn show_spinner(list_host: &GtkBox) {
 }
 
 fn show_featured_into(list_host: &GtkBox, bridge: &UiBridge, request_id: &Rc<Cell<u64>>) {
+    bridge.store.cancel_search();
     clear_host(list_host);
     let loading = libadwaita::StatusPage::builder()
         .icon_name("emblem-favorite-symbolic")
@@ -247,13 +250,10 @@ fn run_search(
                 return;
             }
             let packages = filter_by_category(listing.packages, &category);
-            if packages.len() >= 40 {
-                bridge2.toast_msg(&t("explore.truncated"));
-            }
             clear_host(&list_host2);
             crate::widgets::append_listing_errors(&list_host2, &listing.errors);
             if !packages.is_empty() || listing.errors.is_empty() {
-                list_host2.append(&package_list(&packages, &bridge2));
+                list_host2.append(&paged_package_list(&packages, &bridge2));
             }
         });
 }

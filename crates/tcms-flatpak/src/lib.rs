@@ -1,5 +1,6 @@
 //! Flatpak / Flathub backend.
 
+mod preview;
 use std::collections::HashMap;
 
 use async_trait::async_trait;
@@ -63,6 +64,13 @@ impl FlatpakBackend {
         self.installation = installation.into();
     }
 
+    pub fn installations(&self) -> [Self; 2] {
+        ["user", "system"].map(|scope| {
+            let mut b = self.clone();
+            b.set_installation(scope);
+            b
+        })
+    }
     fn ensure_enabled(&self) -> Result<()> {
         if self.enabled {
             Ok(())
@@ -119,6 +127,23 @@ impl FlatpakBackend {
         Ok(id)
     }
 
+    pub async fn download_updates(&self) -> Result<()> {
+        self.ensure_enabled()?;
+        let scope = self.scope()?;
+        let args = [
+            "update",
+            "--no-deploy",
+            "--noninteractive",
+            "-y",
+            scope.flag(),
+        ];
+        let out = if scope == FlatpakInstallation::User {
+            run("flatpak", args).await?
+        } else {
+            tcms_core::process::run_privileged("flatpak", &args, "download Flatpak updates").await?
+        };
+        out.ensure_success("download Flatpak updates")
+    }
     fn action_args(
         &self,
         action: &str,
@@ -336,6 +361,9 @@ impl Default for FlatpakBackend {
 
 #[async_trait]
 impl Backend for FlatpakBackend {
+    fn label(&self) -> String {
+        format!("flatpak({})", self.installation)
+    }
     fn id(&self) -> BackendId {
         BackendId::Flatpak
     }
@@ -441,6 +469,23 @@ impl Backend for FlatpakBackend {
         Ok(packages)
     }
 
+    async fn preview(
+        &self,
+        action: tcms_core::PackageAction,
+        id: Option<&PackageId>,
+    ) -> Result<tcms_core::TransactionPreview> {
+        self.ensure_enabled()?;
+        let scope = if let Some(id) = id {
+            id.flatpak_ref()?;
+            id.flatpak.as_ref().unwrap().installation.clone()
+        } else {
+            self.scope()?
+        };
+        let id = id.cloned();
+        tokio::task::spawn_blocking(move || preview::resolve(scope, action, id))
+            .await
+            .map_err(|e| Error::Message(e.to_string()))?
+    }
     async fn install(&self, id: &PackageId) -> Result<()> {
         self.transact("install", Some(id)).await
     }
@@ -520,9 +565,6 @@ fn parse_search(
             if seen.insert(pkg.id.clone()) {
                 packages.push(pkg);
             }
-        }
-        if packages.len() >= 60 {
-            break;
         }
     }
     Ok(packages)

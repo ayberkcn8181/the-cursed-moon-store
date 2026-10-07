@@ -60,6 +60,21 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(archive.read_bytes(), (self.root / "second" / archive.name).read_bytes())
         self.assertTrue(gzip.decompress(archive.read_bytes()))
 
+    def test_public_asset_names_match_checksums(self):
+        output = self.root / "dist"
+        output.mkdir()
+        names = ["example.pkg.tar.zst", "example.tar.gz", "PKGBUILD", "SRCINFO", "SOURCE_COMMIT"]
+        for name in names:
+            (output / name).write_text(name)
+        release.write_checksums(output)
+        manifest = (output / "SHA256SUMS").read_text()
+        self.assertEqual({line.split("  ")[1] for line in manifest.splitlines()}, set(names))
+        self.assertNotIn(".SRCINFO", manifest)
+        subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=output, check=True, capture_output=True)
+        (output / "SRCINFO").unlink()
+        with self.assertRaisesRegex(ValueError, "SRCINFO"):
+            release.write_checksums(output)
+
     def test_wrong_tag_version_rejected(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
             release.prepare(self.root / "out", "v0.2.0")

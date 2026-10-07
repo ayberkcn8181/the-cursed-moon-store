@@ -16,7 +16,7 @@ pub struct PackageListing {
 
 #[derive(Debug, Default)]
 pub struct UpdateReport {
-    pub completed: Vec<BackendId>,
+    pub completed: Vec<String>,
     pub errors: Vec<String>,
 }
 
@@ -26,21 +26,20 @@ pub async fn update_backends(backends: &[&dyn Backend]) -> UpdateReport {
     let mut report = UpdateReport::default();
     let mut system_failed = false;
     for id in [BackendId::Pacman, BackendId::Flatpak, BackendId::Aur] {
-        let Some(backend) = backends.iter().find(|b| b.id() == id && b.enabled()) else {
-            continue;
-        };
-        if id == BackendId::Aur && system_failed {
-            report
-                .errors
-                .push("aur: skipped because the system upgrade failed".into());
-            continue;
-        }
-        crate::process::report_progress(&format!("\n=== {} ===\n", id.as_str()));
-        match backend.update_all().await {
-            Ok(()) => report.completed.push(id),
-            Err(error) => {
-                system_failed |= id == BackendId::Pacman;
-                report.errors.push(format!("{}: {error}", id.as_str()));
+        for backend in backends.iter().filter(|b| b.id() == id && b.enabled()) {
+            if id == BackendId::Aur && system_failed {
+                report
+                    .errors
+                    .push("aur: skipped because the system upgrade failed".into());
+                continue;
+            }
+            crate::process::report_progress(&format!("\n=== {} ===\n", backend.label()));
+            match backend.update_all().await {
+                Ok(()) => report.completed.push(backend.label()),
+                Err(error) => {
+                    system_failed |= id == BackendId::Pacman;
+                    report.errors.push(format!("{}: {error}", backend.label()));
+                }
             }
         }
     }
@@ -108,6 +107,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn both_flatpak_scopes_run_even_if_one_fails() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let user = FakeBackend {
+            id: BackendId::Flatpak,
+            fail: true,
+            calls: calls.clone(),
+        };
+        let system = FakeBackend {
+            id: BackendId::Flatpak,
+            fail: false,
+            calls: calls.clone(),
+        };
+        let report = update_backends(&[&user, &system]).await;
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.errors.len(), 1);
+    }
+    #[tokio::test]
     async fn update_does_not_dispatch_to_install() {
         let calls = Arc::new(Mutex::new(vec![]));
         let backend = FakeBackend {
@@ -145,7 +162,7 @@ mod tests {
         };
         let report = update_backends(&[&aur, &flatpak, &pacman]).await;
         assert_eq!(*calls.lock().unwrap(), vec!["pacman", "flatpak"]);
-        assert_eq!(report.completed, vec![BackendId::Flatpak]);
+        assert_eq!(report.completed, vec!["flatpak".to_string()]);
         assert_eq!(report.errors.len(), 2);
     }
 

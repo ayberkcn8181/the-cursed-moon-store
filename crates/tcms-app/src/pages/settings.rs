@@ -101,10 +101,19 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
         if lang == i18n::current() && store_lang.config().language == code {
             return;
         }
-        i18n::set_current(lang);
         let mut cfg = store_lang.config();
         cfg.language = code;
-        let _ = store_lang.save_config(cfg);
+        if !save_settings(&store_lang, cfg) {
+            let old = store_lang.config().language;
+            let idx = Language::ALL
+                .iter()
+                .position(|l| l.code() == old)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            row.set_selected(idx as u32);
+            return;
+        }
+        i18n::set_current(lang);
         if let Some(app) = gio::Application::default() {
             app.activate_action("reload-ui", None);
         }
@@ -138,8 +147,14 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     let store_codecs = store.clone();
     codecs.1.connect_active_notify(move |sw| {
         let mut cfg = store_codecs.config();
+        if cfg.show_codecs == sw.is_active() {
+            return;
+        }
         cfg.show_codecs = sw.is_active();
-        let _ = store_codecs.save_config(cfg);
+        if !save_settings(&store_codecs, cfg) {
+            sw.set_active(store_codecs.config().show_codecs);
+            return;
+        }
         if let Some(app) = gio::Application::default() {
             app.activate_action("reload-lists", None);
         }
@@ -147,8 +162,14 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     let store_drivers = store.clone();
     drivers.1.connect_active_notify(move |sw| {
         let mut cfg = store_drivers.config();
+        if cfg.show_drivers == sw.is_active() {
+            return;
+        }
         cfg.show_drivers = sw.is_active();
-        let _ = store_drivers.save_config(cfg);
+        if !save_settings(&store_drivers, cfg) {
+            sw.set_active(store_drivers.config().show_drivers);
+            return;
+        }
         if let Some(app) = gio::Application::default() {
             app.activate_action("reload-lists", None);
         }
@@ -156,8 +177,14 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     let store_system = store.clone();
     system.1.connect_active_notify(move |sw| {
         let mut cfg = store_system.config();
+        if cfg.show_system_packages == sw.is_active() {
+            return;
+        }
         cfg.show_system_packages = sw.is_active();
-        let _ = store_system.save_config(cfg);
+        if !save_settings(&store_system, cfg) {
+            sw.set_active(store_system.config().show_system_packages);
+            return;
+        }
         if let Some(app) = gio::Application::default() {
             app.activate_action("reload-lists", None);
         }
@@ -176,25 +203,37 @@ fn general_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     );
     let bg = switch_row(
         &t("settings.bg_download"),
-        &t("settings.bg_unavailable"),
+        &t("settings.bg_download_desc"),
         config.download_updates_in_background,
     );
-    // Background download is not implemented yet — keep the preference for future use.
-    bg.1.set_sensitive(false);
     group.add(&auto.0);
     group.add(&bg.0);
 
     let store_auto = store.clone();
     auto.1.connect_active_notify(move |sw| {
         let mut cfg = store_auto.config();
+        if cfg.automatic_updates_check == sw.is_active() {
+            return;
+        }
         cfg.automatic_updates_check = sw.is_active();
-        let _ = store_auto.save_config(cfg);
+        if !save_settings(&store_auto, cfg) {
+            sw.set_active(store_auto.config().automatic_updates_check);
+        }
     });
     let store_bg = store.clone();
     bg.1.connect_active_notify(move |sw| {
         let mut cfg = store_bg.config();
+        if cfg.download_updates_in_background == sw.is_active() {
+            return;
+        }
         cfg.download_updates_in_background = sw.is_active();
-        let _ = store_bg.save_config(cfg);
+        if !save_settings(&store_bg, cfg) {
+            sw.set_active(store_bg.config().download_updates_in_background);
+            return;
+        }
+        if let Some(app) = gio::Application::default() {
+            app.activate_action("reload-lists", None);
+        }
     });
 
     list.append(&group);
@@ -336,7 +375,7 @@ fn compatibility_page(store: &StoreService, config: &AppConfig) -> ScrolledWindo
         config.compatibility.lutris_flatpak_root = lutris_flatpak.1.text().to_string();
         config.compatibility.heroic_root = heroic.1.text().to_string();
         config.compatibility.heroic_flatpak_root = heroic_flatpak.1.text().to_string();
-        if store_save.save_config(config).is_ok() {
+        if save_settings(&store_save, config) {
             if let Some(app) = gio::Application::default() {
                 app.activate_action("reload-lists", None);
             }
@@ -411,7 +450,10 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
                 return;
             }
             cfg.advanced.install_source_priority = next;
-            let _ = store_p.save_config(cfg);
+            if !save_settings(&store_p, cfg) {
+                let old = store_p.config().advanced.install_source_priority.join(",");
+                row.set_selected(keys.iter().position(|k| k == &old).unwrap_or(0) as u32);
+            }
         });
     }
     {
@@ -422,7 +464,9 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
                 return;
             }
             cfg.advanced.ask_repo_on_install = sw.is_active();
-            let _ = store_a.save_config(cfg);
+            if !save_settings(&store_a, cfg) {
+                sw.set_active(store_a.config().advanced.ask_repo_on_install);
+            }
         });
     }
 
@@ -546,6 +590,7 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     if let Ok(text) = toml::to_string_pretty(config) {
         full_editor.buffer().set_text(&text);
     }
+    full_editor.buffer().set_modified(false);
     let full_frame = gtk4::Frame::builder().child(&full_editor).build();
     full_frame.set_height_request(220);
     raw_group.add(&full_label);
@@ -584,17 +629,24 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     save.connect_clicked(move |_| {
         let mut cfg = store_save.config();
 
-        if allow_sw.is_active() {
+        if allow_sw.is_active() && full_tv.buffer().is_modified() {
             let buffer = full_tv.buffer();
             let start = buffer.start_iter();
             let end = buffer.end_iter();
             let text = buffer.text(&start, &end, false);
-            if let Ok(parsed) = toml::from_str::<AppConfig>(&text) {
+            let parsed = match toml::from_str::<AppConfig>(&text) {
+                Ok(p) => p,
+                Err(e) => {
+                    notify_settings_saved(false, Some(e.to_string()));
+                    return;
+                }
+            };
+            {
                 match store_save.save_config(parsed) {
                     Ok(()) => {
                         notify_settings_saved(true, None);
                         if let Some(app) = gio::Application::default() {
-                            app.activate_action("reload-lists", None);
+                            app.activate_action("reload-ui", None);
                         }
                         return;
                     }
@@ -631,11 +683,19 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
             cfg.advanced.raw_overlay = buffer.text(&start, &end, false).to_string();
         }
 
+        let has_overlay = !cfg.advanced.raw_overlay.trim().is_empty();
         match store_save.save_config(cfg) {
             Ok(()) => {
                 notify_settings_saved(true, None);
                 if let Some(app) = gio::Application::default() {
-                    app.activate_action("reload-lists", None);
+                    app.activate_action(
+                        if has_overlay {
+                            "reload-ui"
+                        } else {
+                            "reload-lists"
+                        },
+                        None,
+                    );
                 }
             }
             Err(err) => notify_settings_saved(false, Some(err.to_string())),
@@ -659,7 +719,9 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
     reset.connect_clicked(move |_| {
         let mut cfg = store_reset.config();
         cfg.advanced = tcms_core::AdvancedConfig::default();
-        let _ = store_reset.save_config(cfg.clone());
+        if !save_settings(&store_reset, cfg.clone()) {
+            return;
+        }
         pacman_conf_r.set_text(&cfg.advanced.pacman_conf);
         pacman_args_r.set_text(&cfg.advanced.pacman_extra_args);
         flatpak_inst_r.set_text(&cfg.advanced.flatpak_installation);
@@ -673,6 +735,7 @@ fn advanced_page(store: &StoreService, config: &AppConfig) -> ScrolledWindow {
         overlay_r.buffer().set_text(&cfg.advanced.raw_overlay);
         if let Ok(text) = toml::to_string_pretty(&cfg) {
             full_r.buffer().set_text(&text);
+            full_r.buffer().set_modified(false);
         }
     });
 
@@ -719,10 +782,19 @@ fn bind_source_switch(
     setter: impl Fn(&mut AppConfig, bool) + 'static,
 ) {
     let store = store.clone();
+    let reverting = std::rc::Rc::new(std::cell::Cell::new(false));
     sw.connect_active_notify(move |sw| {
+        if reverting.get() {
+            return;
+        }
         let mut cfg = store.config();
         setter(&mut cfg, sw.is_active());
-        let _ = store.save_config(cfg);
+        if !save_settings(&store, cfg) {
+            reverting.set(true);
+            sw.set_active(!sw.is_active());
+            reverting.set(false);
+            return;
+        }
         if let Some(app) = gio::Application::default() {
             app.activate_action("reload-lists", None);
         }
@@ -766,4 +838,14 @@ fn notify_settings_saved(ok: bool, error: Option<String>) {
         }
     }
     dialog.present(None::<&gtk4::Window>);
+}
+
+fn save_settings(store: &StoreService, config: AppConfig) -> bool {
+    match store.save_config(config) {
+        Ok(()) => true,
+        Err(e) => {
+            notify_settings_saved(false, Some(e.to_string()));
+            false
+        }
+    }
 }

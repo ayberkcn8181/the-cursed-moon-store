@@ -58,7 +58,27 @@ impl StoreWindow {
         let busy_ops: Rc<RefCell<std::collections::HashSet<tcms_core::PackageId>>> =
             Rc::new(RefCell::new(std::collections::HashSet::new()));
 
+        let periodic_timer = Rc::new(RefCell::new(None::<glib::SourceId>));
         let pending_transactions = Rc::new(std::cell::Cell::new(0usize));
+        {
+            let history = store.history.clone();
+            let pending = pending_transactions.clone();
+            let toast = toast_overlay.clone();
+            let close_store = store.clone();
+            let timer = periodic_timer.clone();
+            window.connect_close_request(move |_| {
+                if history.active() || pending.get() > 0 {
+                    toast.add_toast(libadwaita::Toast::new(&t("history.close_blocked")));
+                    glib::Propagation::Stop
+                } else {
+                    close_store.cancel_search();
+                    if let Some(timer) = timer.borrow_mut().take() {
+                        timer.remove();
+                    }
+                    glib::Propagation::Proceed
+                }
+            });
+        }
         let make_bridge = {
             let store = store.clone();
             let toast = toast_overlay.clone();
@@ -184,6 +204,18 @@ impl StoreWindow {
         menu.append(Some(&t("menu.about")), Some("app.about"));
         menu_button.set_menu_model(Some(&menu));
         header.pack_end(&menu_button);
+        let history_button = gtk4::Button::builder()
+            .icon_name("document-open-recent-symbolic")
+            .tooltip_text(t("history.title"))
+            .build();
+        let history = store.history.clone();
+        let weak = window_gtk.downgrade();
+        history_button.connect_clicked(move |_| {
+            if let Some(window) = weak.upgrade() {
+                crate::transaction_center::present(&window, &history);
+            }
+        });
+        header.pack_end(&history_button);
 
         let refresh = gtk4::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -290,33 +322,50 @@ impl StoreWindow {
             let store_check = store.clone();
             let toast_check = toast_overlay.clone();
             let updates_page = updates.clone();
-            glib::timeout_add_local(std::time::Duration::from_secs(30 * 60), move || {
-                if !store_check.config().automatic_updates_check {
-                    return glib::ControlFlow::Continue;
-                }
-                let store_check = store_check.clone();
-                let toast_check = toast_check.clone();
-                let updates_page = updates_page.clone();
-                store_check.fetch_updates_async(move |listing| {
-                    if !listing.errors.is_empty() {
-                        toast_check.add_toast(libadwaita::Toast::new(&t("updates.check_failed")));
+            let timer =
+                glib::timeout_add_local(std::time::Duration::from_secs(30 * 60), move || {
+                    if !store_check.config().automatic_updates_check || store_check.history.active()
+                    {
+                        return glib::ControlFlow::Continue;
+                    }
+                    let store_check = store_check.clone();
+                    let toast_check = toast_check.clone();
+                    let updates_page = updates_page.clone();
+                    store_check.fetch_updates_async(move |listing| {
+                        if !listing.errors.is_empty() {
+                            toast_check
+                                .add_toast(libadwaita::Toast::new(&t("updates.check_failed")));
+                            updates_page.reload();
+                            return;
+                        }
+                        let pkgs = listing.packages;
+                        if pkgs.is_empty() {
+                            return;
+                        }
+                        toast_check.add_toast(libadwaita::Toast::new(&tcms_core::i18n::t_args(
+                            "toast.updates_available",
+                            &[("n", &pkgs.len().to_string())],
+                        )));
                         updates_page.reload();
-                        return;
-                    }
-                    let pkgs = listing.packages;
-                    if pkgs.is_empty() {
-                        return;
-                    }
-                    toast_check.add_toast(libadwaita::Toast::new(&tcms_core::i18n::t_args(
-                        "toast.updates_available",
-                        &[("n", &pkgs.len().to_string())],
-                    )));
-                    updates_page.reload();
+                    });
+                    glib::ControlFlow::Continue
                 });
-                glib::ControlFlow::Continue
-            });
+            *periodic_timer.borrow_mut() = Some(timer);
         }
 
+        if let Some(error) = store.startup_error() {
+            let weak = window.downgrade();
+            glib::idle_add_local_once(move || {
+                if let Some(window) = weak.upgrade() {
+                    let dialog = libadwaita::AlertDialog::builder()
+                        .heading(t("advanced.save_failed_title"))
+                        .body(format!("{}\n\n{error}", t("settings.load_failed")))
+                        .build();
+                    dialog.add_response("close", &t("action.close"));
+                    dialog.present(Some(&window));
+                }
+            });
+        }
         window.connect_destroy(move |_| {
             let _keep = (&explore, &installed, &updates, &compatibility);
         });

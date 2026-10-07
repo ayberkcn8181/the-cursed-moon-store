@@ -55,6 +55,9 @@ pub enum PackageAction {
 #[async_trait]
 pub trait Backend: Send + Sync {
     fn id(&self) -> BackendId;
+    fn label(&self) -> String {
+        self.id().as_str().into()
+    }
     fn enabled(&self) -> bool;
     fn set_enabled(&mut self, enabled: bool);
 
@@ -69,6 +72,13 @@ pub trait Backend: Send + Sync {
     /// Upgrade this source in one transaction (including dependencies/runtimes).
     async fn update_all(&self) -> Result<()>;
 
+    async fn preview(
+        &self,
+        _action: PackageAction,
+        _id: Option<&PackageId>,
+    ) -> Result<crate::TransactionPreview> {
+        Err(crate::Error::Message("Preview not supported".into()))
+    }
     async fn apply(&self, action: PackageAction, id: &PackageId) -> Result<()> {
         match action {
             PackageAction::Install => self.install(id).await,

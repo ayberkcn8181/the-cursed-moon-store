@@ -16,7 +16,7 @@ fi
 python scripts/prepare-release.py "${tcms_args[@]}"
 cd dist
 shellcheck -s bash -e SC2034,SC2154 PKGBUILD
-makepkg --printsrcinfo > .SRCINFO
+makepkg --printsrcinfo > SRCINFO
 # All dependencies were installed by the CI container setup. Do not run sudo
 # or disable tests here. Build and check use Cargo.lock with --frozen.
 makepkg --noconfirm --cleanbuild
@@ -28,5 +28,5 @@ cp ../packaging/aur/the-cursed-moon-store-git/PKGBUILD aur/PKGBUILD
   makepkg --printsrcinfo > .SRCINFO
   tar -czf ../the-cursed-moon-store-git-aur.tar.gz PKGBUILD .SRCINFO
 )
-sha256sum -- *.pkg.tar.zst *.tar.gz PKGBUILD .SRCINFO SOURCE_COMMIT > SHA256SUMS
+python ../scripts/prepare-release.py --output . --checksums
 sha256sum --check SHA256SUMS

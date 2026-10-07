@@ -200,34 +200,104 @@ impl AppConfig {
         let text = fs::read_to_string(&path)?;
         let cfg: Self = toml::from_str(&text)
             .map_err(|e| Error::Config(format!("invalid config.toml: {e}")))?;
-        // Keep "system" as-is; resolve only at runtime via i18n::resolve.
-        Ok(cfg)
+        cfg.resolved()
     }
 
-    pub fn save(&self) -> Result<()> {
-        let dir = Self::config_dir()?;
-        fs::create_dir_all(&dir)?;
-        let path = dir.join("config.toml");
-        let text = toml::to_string_pretty(self)
-            .map_err(|e| Error::Config(format!("serialize config: {e}")))?;
-        fs::write(path, text)?;
+    pub fn resolved(mut self) -> Result<Self> {
+        let overlay = std::mem::take(&mut self.advanced.raw_overlay);
+        if !overlay.trim().is_empty() {
+            let mut value =
+                toml::Value::try_from(&self).map_err(|e| Error::Config(e.to_string()))?;
+            let patch = if overlay.trim_start().starts_with('{') {
+                let json: serde_json::Value =
+                    serde_json::from_str(&overlay).map_err(|e| Error::Config(e.to_string()))?;
+                toml::Value::try_from(json).map_err(|e| Error::Config(e.to_string()))?
+            } else {
+                toml::from_str::<toml::Value>(&overlay).map_err(|e| Error::Config(e.to_string()))?
+            };
+            merge_overlay(&mut value, patch, "")?;
+            self = value.try_into().map_err(|e| Error::Config(e.to_string()))?;
+            if !self.advanced.raw_overlay.trim().is_empty() {
+                return Err(Error::Config("nested raw_overlay is not allowed".into()));
+            }
+        }
+        self.validate()?;
+        Ok(self)
+    }
+    fn validate(&self) -> Result<()> {
+        let a = &self.advanced;
+        if !matches!(a.flatpak_installation.as_str(), "user" | "system") {
+            return Err(Error::Config(
+                "Flatpak installation must be user or system".into(),
+            ));
+        }
+        let rpc = reqwest::Url::parse(&a.aur_rpc_url)
+            .map_err(|e| Error::Config(format!("AUR RPC URL: {e}")))?;
+        if !matches!(rpc.scheme(), "http" | "https") || rpc.host_str().is_none() {
+            return Err(Error::Config("AUR RPC requires an HTTP(S) URL".into()));
+        }
+        for line in a
+            .flatpak_remotes
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
+            let (name, url) = line
+                .split_once('|')
+                .ok_or_else(|| Error::Config("Flatpak remotes require name|URL".into()))?;
+            if !crate::is_safe_pkg_token(name.trim()) {
+                return Err(Error::Config("invalid Flatpak remote name".into()));
+            }
+            let url = reqwest::Url::parse(url.trim()).map_err(|e| Error::Config(e.to_string()))?;
+            if !matches!(url.scheme(), "http" | "https" | "file") {
+                return Err(Error::Config(
+                    "unsupported Flatpak remote URL scheme".into(),
+                ));
+            }
+        }
+        for (name, args) in [("pacman", &a.pacman_extra_args), ("AUR", &a.aur_extra_args)] {
+            if args
+                .split_whitespace()
+                .any(|a| !matches!(a, "--noconfirm" | "--needed"))
+            {
+                return Err(Error::Config(format!(
+                    "{name}: only --noconfirm and --needed can be previewed safely"
+                )));
+            }
+        }
         Ok(())
     }
-
+    pub fn save(&self) -> Result<()> {
+        self.save_to(&Self::config_path()?)
+    }
     pub fn load_from(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)?;
-        toml::from_str(&text).map_err(|e| Error::Config(format!("invalid config: {e}")))
+        let cfg: Self =
+            toml::from_str(&text).map_err(|e| Error::Config(format!("invalid config: {e}")))?;
+        cfg.resolved()
     }
-
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let text = toml::to_string_pretty(self)
+        let cfg = self.clone().resolved()?;
+        let text = toml::to_string_pretty(&cfg)
             .map_err(|e| Error::Config(format!("serialize config: {e}")))?;
-        fs::write(path, text)?;
+        crate::atomic_file::write(path, text.as_bytes())?;
         Ok(())
     }
+}
+fn merge_overlay(base: &mut toml::Value, patch: toml::Value, prefix: &str) -> Result<()> {
+    match (base, patch) {
+        (toml::Value::Table(base), toml::Value::Table(patch)) => {
+            for (key, value) in patch {
+                let path = format!("{prefix}{key}");
+                let target = base
+                    .get_mut(&key)
+                    .ok_or_else(|| Error::Config(format!("unknown overlay key: {path}")))?;
+                merge_overlay(target, value, &format!("{path}."))?;
+            }
+        }
+        (base, patch) => *base = patch,
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -235,6 +305,34 @@ mod tests {
     use super::*;
     use crate::package::{InstallState, Package, PackageId, PackageSource};
 
+    #[test]
+    fn overlays_apply_once_and_unknown_keys_are_rejected() {
+        for text in [
+            "enable_aur = false\n[advanced]\nflatpak_installation = 'user'",
+            r#"{"enable_aur":false,"advanced":{"flatpak_installation":"user"}}"#,
+        ] {
+            let mut cfg = AppConfig::default();
+            cfg.advanced.raw_overlay = text.into();
+            let r = cfg.resolved().unwrap();
+            assert!(!r.enable_aur);
+            assert_eq!(r.advanced.flatpak_installation, "user");
+            assert!(r.advanced.raw_overlay.is_empty());
+        }
+        let mut cfg = AppConfig::default();
+        cfg.advanced.raw_overlay = "enable_aru = false".into();
+        assert!(cfg.resolved().is_err());
+    }
+    #[test]
+    fn invalid_settings_do_not_truncate_previous_file() {
+        let p = std::env::temp_dir().join(format!("tcms-config-{}.toml", std::process::id()));
+        let mut cfg = AppConfig::default();
+        cfg.save_to(&p).unwrap();
+        let before = std::fs::read(&p).unwrap();
+        cfg.advanced.flatpak_installation = "invalid".into();
+        assert!(cfg.save_to(&p).is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), before);
+        std::fs::remove_file(p).unwrap();
+    }
     #[test]
     fn default_priority_prefers_pacman() {
         let adv = AdvancedConfig::default();
@@ -286,6 +384,7 @@ mod tests {
             size_bytes: None,
             state: InstallState::Available,
             installed_elsewhere: false,
+            foreign_status: None,
             categories: vec!["Codec".into()],
         };
         assert!(cfg.allows_package(&app));

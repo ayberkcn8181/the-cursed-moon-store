@@ -15,8 +15,10 @@ A graphical software center for **Arch Linux and Arch-based distributions**, bui
 ## Features
 
 - Search applications and browse featured software from Flathub.
-- View and search installed system packages, Flatpak applications and runtimes.
-- Manage updates with progress output and per-source results.
+- View and search the full installed inventory, including local packages, verified AUR packages and Flatpak runtimes.
+- Preview affected packages, dependencies and estimated download/disk sizes before changes.
+- Manage updates for user and system Flatpaks, with per-source results and optional cache-only downloads.
+- Inspect transaction history, copy logs and cancel queued operations.
 - Configure package sources, source priorities and AUR helpers.
 - Install and manage Proton-GE, Wine-GE and DXVK, with Steam, Lutris and Heroic discovery.
 - Use the interface in nine languages, including English and Turkish.
@@ -65,6 +67,8 @@ the-cursed-moon-store
 ```
 
 Run the application as a regular user. System package installations and updates use a full pacman system upgrade; authentication is requested when needed.
+
+AUR previews show declared dependencies; the helper resolves the final build plan. Sizes that cannot be determined are shown as unknown. Plans may change if repository data changes before execution.
 
 Settings are stored in `$XDG_CONFIG_HOME/the-cursed-moon-store/config.toml`, defaulting to `~/.config/the-cursed-moon-store/config.toml`. Check the installed version with `the-cursed-moon-store --version`.
 
