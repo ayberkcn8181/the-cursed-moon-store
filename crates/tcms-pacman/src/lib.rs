@@ -257,6 +257,31 @@ impl PacmanBackend {
         Ok(preview)
     }
 
+    pub async fn download_updates(&self) -> Result<()> {
+        self.ensure_enabled()?;
+        if self.available_updates().await?.is_empty() {
+            return Ok(());
+        }
+        let command = tcms_core::process::resolve_program("checkupdates");
+        let out = if let Some(pkexec) = tcms_core::process::pkexec_path() {
+            run(
+                pkexec,
+                [
+                    command.as_os_str(),
+                    std::ffi::OsStr::new("--download"),
+                    std::ffi::OsStr::new("--nocolor"),
+                ],
+            )
+            .await?
+        } else {
+            run(command, ["--download", "--nocolor"]).await?
+        };
+        if out.status == 2 {
+            Ok(())
+        } else {
+            out.ensure_success("download pacman updates")
+        }
+    }
     fn upgrade_args(&self, package: Option<&str>) -> Vec<String> {
         let mut args = self.conf_args();
         args.extend(["-Syu".into(), "--noconfirm".into(), "--needed".into()]);

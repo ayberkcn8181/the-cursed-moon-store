@@ -38,7 +38,7 @@
   "settings.auto_updates": "Otomatik güncelleme denetimi",
   "settings.auto_updates_desc": "Mağaza açıkken paket güncellemelerini düzenli ara",
   "settings.bg_download": "Arka planda indir",
-  "settings.bg_download_desc": "Henüz yok — tercih gelecek sürüm için kaydedilir",
+  "settings.bg_download_desc": "Pacman ve Flatpak güncellemelerini kurmadan önbelleğe indirir. Sistem indirmeleri yetkilendirme isteyebilir. AUR paketleri otomatik derlenmez.",
   "settings.sources_group": "Etkin kaynaklar",
   "settings.sources_group_desc": "Keşfet, Yüklü ve Güncellemeler’de görünecek depoları seçin.",
   "settings.source_pacman": "Sistem depoları",
@@ -301,5 +301,10 @@
   "history.copy": "Çıktıyı kopyala",
   "history.empty": "Henüz işlem yok",
   "history.save_failed": "Geçmiş kaydedilemedi",
-  "history.close_blocked": "Kapatmadan önce çalışan işlemlerin bitmesini bekleyin veya sıradaki işlemleri iptal edin."
+  "history.close_blocked": "Kapatmadan önce çalışan işlemlerin bitmesini bekleyin veya sıradaki işlemleri iptal edin.",
+  "settings.wait_transaction": "Ayarları değiştirmeden önce sıradaki ve çalışan işlemlerin bitmesini bekleyin.",
+  "settings.load_failed": "Ayarlar yüklenemedi. Varsayılanlar kullanılıyor. Düzeltilmiş ayarlar kaydedildiğinde önceki dosya yedeklenecek.",
+  "downloads.title": "Güncellemeleri indir",
+  "downloads.ready": "Güncellemeler indirildi, kurulmaya hazır",
+  "downloads.failed": "Bazı güncellemeler indirilemedi"
 }

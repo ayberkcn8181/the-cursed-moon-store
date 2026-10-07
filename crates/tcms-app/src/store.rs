@@ -23,6 +23,9 @@ pub enum ListKind {
 #[derive(Clone)]
 pub struct StoreService {
     pub history: Arc<tcms_core::history::TransactionQueue>,
+    startup_error: Arc<std::sync::Mutex<Option<String>>>,
+    download_active: Arc<std::sync::atomic::AtomicBool>,
+    downloaded: Arc<std::sync::Mutex<Option<String>>>,
     inner: Arc<std::sync::Mutex<StoreInner>>,
     search_cancel: Arc<std::sync::Mutex<tcms_core::cancel::Cancellation>>,
     updates_cache: Arc<tcms_core::cache::SnapshotCache<PackageListing>>,
@@ -39,8 +42,14 @@ struct StoreInner {
 
 impl StoreService {
     pub fn new() -> Self {
-        let config = AppConfig::load().unwrap_or_default();
-        Self::from_config(config)
+        match AppConfig::load() {
+            Ok(config) => Self::from_config(config),
+            Err(e) => {
+                let store = Self::from_config(AppConfig::default());
+                *store.startup_error.lock().unwrap() = Some(e.to_string());
+                store
+            }
+        }
     }
 
     pub(crate) fn from_config(config: AppConfig) -> Self {
@@ -67,6 +76,9 @@ impl StoreService {
             .expect("tokio runtime");
         Self {
             history: tcms_core::history::TransactionQueue::application(),
+            startup_error: Arc::new(std::sync::Mutex::new(None)),
+            download_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            downloaded: Arc::new(std::sync::Mutex::new(None)),
             search_cancel: Arc::new(std::sync::Mutex::new(Default::default())),
             updates_cache: Arc::new(tcms_core::cache::SnapshotCache::new(Duration::from_secs(
                 30,
@@ -112,9 +124,36 @@ impl StoreService {
         self.with_inner(|inner| inner.config.clone())
     }
 
+    pub fn startup_error(&self) -> Option<String> {
+        self.startup_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub fn save_config(&self, config: AppConfig) -> tcms_core::Result<()> {
+        if self.history.active() {
+            return Err(tcms_core::Error::Config(tcms_core::t(
+                "settings.wait_transaction",
+            )));
+        }
+        let config = config.resolved()?;
+        if self.startup_error().is_some() {
+            let path = AppConfig::config_path()?;
+            if path.exists() {
+                let backup = path.with_file_name(format!(
+                    "config.invalid-{}.toml",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                tcms_core::atomic_file::write(&backup, &std::fs::read(&path)?)?;
+            }
+        }
+
         self.with_inner_mut(|inner| {
             config.save()?;
+            *self.startup_error.lock().unwrap_or_else(|e| e.into_inner()) = None;
             inner.pacman.set_enabled(config.enable_pacman);
             inner
                 .pacman
@@ -536,6 +575,48 @@ impl StoreService {
         );
     }
 
+    pub fn preview_async(
+        &self,
+        action: PackageAction,
+        id: Option<PackageId>,
+        done: impl FnOnce(tcms_core::Result<tcms_core::TransactionPreview>) + 'static,
+    ) {
+        let store = self.clone();
+        let (tx, rx) = mpsc::channel();
+        if !spawn_named("tcms-preview", move || {
+            let (pacman, flatpak, aur) = store.backends();
+            let result = store.runtime.block_on(async {
+                if let Some(id) = id {
+                    let b: &dyn Backend = match id.source {
+                        PackageSource::Pacman => &pacman,
+                        PackageSource::Flatpak => &flatpak,
+                        PackageSource::Aur => &aur,
+                    };
+                    b.preview(action, Some(&id)).await
+                } else {
+                    let [user, system] = flatpak.installations();
+                    let mut p = tcms_core::TransactionPreview::default();
+                    for b in [&pacman as &dyn Backend, &user, &system, &aur] {
+                        if b.enabled() {
+                            p.extend(b.preview(PackageAction::Update, None).await?);
+                        }
+                    }
+                    Ok(p)
+                }
+            });
+            let _ = tx.send(result);
+        }) {
+            done(Err(tcms_core::Error::Message(
+                "Could not start preview worker".into(),
+            )));
+            return;
+        }
+        poll_local(
+            rx,
+            Err(tcms_core::Error::Message("Preview worker stopped".into())),
+            done,
+        );
+    }
     pub fn apply_action(
         &self,
         action: PackageAction,
@@ -684,6 +765,148 @@ impl StoreService {
             },
             on_done,
         );
+    }
+
+    pub fn download_updates_async(
+        &self,
+        packages: &[Package],
+        on_progress: impl Fn(String) + 'static,
+        on_done: impl FnOnce(UpdateReport) + 'static,
+    ) -> bool {
+        use std::sync::atomic::Ordering;
+        if !self.config().download_updates_in_background {
+            return false;
+        }
+        let eligible: Vec<_> = packages
+            .iter()
+            .filter(|p| p.id.source != PackageSource::Aur)
+            .collect();
+        if eligible.is_empty() {
+            return false;
+        }
+        let mut versions: Vec<_> = eligible
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:?}:{}",
+                    p.id,
+                    p.available_version.as_deref().unwrap_or("")
+                )
+            })
+            .collect();
+        versions.sort();
+        let fingerprint = versions.join("\n");
+        if self
+            .downloaded
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            == Some(&fingerprint)
+            || self.download_active.swap(true, Ordering::SeqCst)
+        {
+            return false;
+        }
+        let pacman_wanted = eligible
+            .iter()
+            .any(|p| p.id.source == PackageSource::Pacman);
+        let user_wanted = eligible.iter().any(|p| {
+            p.id.flatpak
+                .as_ref()
+                .is_some_and(|r| r.installation == tcms_core::FlatpakInstallation::User)
+        });
+        let system_wanted = eligible.iter().any(|p| {
+            p.id.flatpak
+                .as_ref()
+                .is_some_and(|r| r.installation == tcms_core::FlatpakInstallation::System)
+        });
+        let store = self.clone();
+        let job = self.history.enqueue(tcms_core::t("downloads.title"));
+        let (tx, rx) = mpsc::channel();
+        let (progress, progress_rx) = mpsc::sync_channel(64);
+        poll_progress(progress_rx, on_progress);
+        if !spawn_named("tcms-download-updates", move || {
+            struct Reset(Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for Reset {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::SeqCst);
+                }
+            }
+            let _reset = Reset(store.download_active.clone());
+            let cancelled = || UpdateReport {
+                completed: vec![],
+                errors: vec![tcms_core::t("history.cancelled")],
+            };
+            let Some(running) = store.history.acquire(job) else {
+                let _ = tx.send(cancelled());
+                return;
+            };
+            if !store.config().download_updates_in_background {
+                store
+                    .history
+                    .finish(job, Some(&tcms_core::t("history.cancelled")));
+                let _ = tx.send(cancelled());
+                return;
+            }
+            let _transaction = PACKAGE_TRANSACTIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let (pacman, flatpak, _) = store.backends();
+            let [user, system] = flatpak.installations();
+            let report = store
+                .runtime
+                .block_on(tcms_core::process::with_progress_log(
+                    progress,
+                    running.log.clone(),
+                    async {
+                        let mut report = UpdateReport::default();
+                        if pacman_wanted && pacman.enabled() {
+                            match pacman.download_updates().await {
+                                Ok(()) => report.completed.push(pacman.label()),
+                                Err(e) => report.errors.push(format!("pacman: {e}")),
+                            }
+                        }
+                        for (wanted, backend) in [(user_wanted, &user), (system_wanted, &system)] {
+                            if wanted && backend.enabled() {
+                                match backend.download_updates().await {
+                                    Ok(()) => report.completed.push(backend.label()),
+                                    Err(e) => {
+                                        report.errors.push(format!("{}: {e}", backend.label()))
+                                    }
+                                }
+                            }
+                        }
+                        report
+                    },
+                ));
+            store.history.finish(
+                job,
+                (!report.errors.is_empty())
+                    .then(|| report.errors.join("; "))
+                    .as_deref(),
+            );
+            if report.errors.is_empty() {
+                *store.downloaded.lock().unwrap_or_else(|e| e.into_inner()) = Some(fingerprint);
+            }
+            let _ = tx.send(report);
+        }) {
+            self.download_active.store(false, Ordering::SeqCst);
+            self.history
+                .finish(job, Some("failed to start download worker"));
+            on_done(UpdateReport {
+                completed: vec![],
+                errors: vec!["failed to start download worker".into()],
+            });
+            return false;
+        }
+        poll_local(
+            rx,
+            UpdateReport {
+                completed: vec![],
+                errors: vec!["download worker stopped unexpectedly".into()],
+            },
+            on_done,
+        );
+        true
     }
 
     pub fn fetch_updates_async<F>(&self, on_done: F)
@@ -1128,56 +1351,118 @@ impl UiBridge {
     }
 
     fn confirm_remove(&self, pkg: &Package, done: Rc<dyn Fn()>) {
-        use libadwaita::prelude::*;
-        use tcms_core::i18n::{t, t_args};
-
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading(t("confirm.remove_title"))
-            .body(t_args("confirm.remove_body", &[("name", &pkg.name)]))
-            .build();
-        dialog.add_response("cancel", &t("action.cancel"));
-        dialog.add_response("remove", &t("action.remove"));
-        dialog.set_response_appearance("remove", libadwaita::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
-
-        let bridge = self.clone();
-        let pkg = pkg.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "remove" {
-                bridge.execute_action(PackageAction::Remove, &pkg, done.clone());
-            } else {
-                done();
-            }
-        });
-        dialog.present(Some(&self.window));
+        self.confirm_system_action(PackageAction::Remove, pkg, done);
     }
-
     fn confirm_system_action(&self, action: PackageAction, pkg: &Package, done: Rc<dyn Fn()>) {
-        use libadwaita::prelude::*;
-        use tcms_core::i18n::t;
-        if pkg.id.source != PackageSource::Pacman {
-            self.execute_action(action, pkg, done);
-            return;
-        }
-        let dialog = libadwaita::AlertDialog::builder()
-            .heading(t("confirm.system_upgrade_title"))
-            .body(t("confirm.system_upgrade_body"))
-            .build();
-        dialog.add_response("cancel", &t("action.cancel"));
-        dialog.add_response("continue", &t("action.update"));
-        dialog.set_default_response(Some("cancel"));
-        dialog.set_close_response("cancel");
         let bridge = self.clone();
         let pkg = pkg.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "continue" {
-                bridge.execute_action(action, &pkg, done.clone());
+        self.confirm_preview(action, Some(pkg.id.clone()), move |yes| {
+            if yes {
+                bridge.execute_action(action, &pkg, done);
             } else {
                 done();
             }
         });
+    }
+    pub fn confirm_preview(
+        &self,
+        action: PackageAction,
+        id: Option<PackageId>,
+        done: impl FnOnce(bool) + 'static,
+    ) {
+        use libadwaita::prelude::*;
+        use tcms_core::t;
+        let dialog = libadwaita::AlertDialog::builder()
+            .heading(t("preview.title"))
+            .body(t("preview.loading"))
+            .build();
+        dialog.add_response("cancel", &t("action.cancel"));
+        dialog.add_response(
+            "continue",
+            &t(match action {
+                PackageAction::Install => "action.install",
+                PackageAction::Remove => "action.remove",
+                PackageAction::Update => "action.update",
+            }),
+        );
+        dialog.set_response_enabled("continue", false);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        dialog.set_response_appearance(
+            "continue",
+            if action == PackageAction::Remove {
+                libadwaita::ResponseAppearance::Destructive
+            } else {
+                libadwaita::ResponseAppearance::Suggested
+            },
+        );
+        let done = Rc::new(std::cell::RefCell::new(Some(done)));
+        let closed = Rc::new(std::cell::Cell::new(false));
+        let close = closed.clone();
+        dialog.connect_response(None, move |_, r| {
+            close.set(true);
+            if let Some(done) = done.borrow_mut().take() {
+                done(r == "continue");
+            }
+        });
         dialog.present(Some(&self.window));
+        self.store.preview_async(action, id, move |result| {
+            if closed.get() {
+                return;
+            }
+            match result {
+                Err(e) => dialog.set_body(&format!("{}\n\n{e}", t("preview.failed"))),
+                Ok(p) => {
+                    let size = p
+                        .download_bytes()
+                        .map(|v| format!("{:.2} MiB", v as f64 / 1048576.0))
+                        .unwrap_or_else(|| t("preview.unknown"));
+                    let disk = p
+                        .disk_delta()
+                        .map(|v| format!("{:+.2} MiB", v as f64 / 1048576.0))
+                        .unwrap_or_else(|| t("preview.unknown"));
+                    dialog.set_body(&format!(
+                        "{}: {}\n{}: {size}\n{}: {disk}\n\n{}",
+                        t("preview.packages"),
+                        p.entries.len(),
+                        t("preview.download"),
+                        t("preview.disk"),
+                        t("preview.estimate")
+                    ));
+                    let mut lines = Vec::new();
+                    for e in &p.entries {
+                        let action = t(match e.action {
+                            PackageAction::Install => "action.install",
+                            PackageAction::Remove => "action.remove",
+                            PackageAction::Update => "action.update",
+                        });
+                        lines.push(format!(
+                            "{action}: {}\n  {} → {}",
+                            e.id.display_ref(),
+                            e.old_version.as_deref().unwrap_or("—"),
+                            e.new_version.as_deref().unwrap_or("—")
+                        ));
+                    }
+                    lines.extend(p.notes);
+                    let buffer = gtk4::TextBuffer::new(None);
+                    buffer.set_text(&lines.join("\n\n"));
+                    let view = gtk4::TextView::builder()
+                        .buffer(&buffer)
+                        .editable(false)
+                        .cursor_visible(false)
+                        .wrap_mode(gtk4::WrapMode::WordChar)
+                        .build();
+                    let scroll = gtk4::ScrolledWindow::builder()
+                        .child(&view)
+                        .min_content_height(240)
+                        .max_content_height(400)
+                        .propagate_natural_height(true)
+                        .build();
+                    dialog.set_extra_child(Some(&scroll));
+                    dialog.set_response_enabled("continue", !p.entries.is_empty());
+                }
+            }
+        });
     }
 
     fn execute_action(&self, action: PackageAction, pkg: &Package, done: Rc<dyn Fn()>) {

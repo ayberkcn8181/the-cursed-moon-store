@@ -38,7 +38,7 @@
   "settings.auto_updates": "자동 업데이트 확인",
   "settings.auto_updates_desc": "스토어가 열려 있는 동안 주기적으로 업데이트 확인",
   "settings.bg_download": "백그라운드 다운로드",
-  "settings.bg_download_desc": "아직 없음 — 기본 설정은 이후 버전을 위해 저장됨",
+  "settings.bg_download_desc": "Cache pacman and Flatpak updates without installing them. System downloads may request authentication. AUR packages are not built automatically.",
   "settings.sources_group": "사용 중인 소스",
   "settings.sources_group_desc": "탐색, 설치됨, 업데이트에 표시할 저장소를 선택합니다.",
   "settings.source_pacman": "시스템 저장소",
@@ -301,5 +301,10 @@
   "history.copy": "Copy output",
   "history.empty": "No transactions yet",
   "history.save_failed": "Could not save history",
-  "history.close_blocked": "Wait for running operations or cancel queued jobs before closing."
+  "history.close_blocked": "Wait for running operations or cancel queued jobs before closing.",
+  "settings.wait_transaction": "Wait for queued and running transactions before changing settings.",
+  "settings.load_failed": "Settings could not be loaded. Defaults are active. The original file will be backed up when corrected settings are saved.",
+  "downloads.title": "Download updates",
+  "downloads.ready": "Updates downloaded and ready to install",
+  "downloads.failed": "Some updates could not be downloaded"
 }

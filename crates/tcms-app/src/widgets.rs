@@ -59,6 +59,72 @@ pub fn package_list(packages: &[Package], bridge: &UiBridge) -> ScrolledWindow {
     scroll
 }
 
+fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
+    let version_bit = match (&pkg.available_version, pkg.state) {
+        (Some(avail), InstallState::Updatable) => format!("{} → {avail}", pkg.version),
+        _ => pkg.version.clone(),
+    };
+    let source = match &pkg.id.flatpak {
+        Some(identity) => format!(
+            "{} · {} · {}",
+            identity.origin,
+            identity.branch,
+            identity.installation.label()
+        ),
+        None => t(pkg.source_i18n_key()),
+    };
+    let summary = if pkg.summary.chars().count() > 90 {
+        let s: String = pkg.summary.chars().take(87).collect();
+        format!("{s}…")
+    } else {
+        pkg.summary.clone()
+    };
+    let row = libadwaita::ActionRow::builder()
+        .title(&pkg.name)
+        .subtitle(format!("{summary}\n{source} · {version_bit}"))
+        .activatable(true)
+        .build();
+
+    let icon = load_package_icon(pkg, bridge, 42);
+    row.add_prefix(&icon);
+
+    let badge = Label::builder()
+        .label(state_label(pkg.state))
+        .css_classes(["dim-label", "caption"])
+        .build();
+    row.add_suffix(&badge);
+
+    if let Some(button) = list_action_button(pkg, bridge) {
+        row.add_suffix(&button);
+    }
+
+    if pkg.state == InstallState::Updatable && !pkg.installed_elsewhere {
+        let remove_btn = gtk4::Button::builder()
+            .label(t("action.remove"))
+            .valign(gtk4::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        let bridge_rm = bridge.clone();
+        let pkg_rm = pkg.clone();
+        remove_btn.connect_clicked(move |btn| {
+            bridge_rm.run_action(PackageAction::Remove, &pkg_rm, btn);
+        });
+        row.add_suffix(&remove_btn);
+    }
+
+    let bridge_open = bridge.clone();
+    let pkg_open = pkg.clone();
+    row.connect_activated(move |_| {
+        bridge_open.open_package(&pkg_open);
+    });
+
+    // ActionRow is already a ListBoxRow; nesting it inside another ListBoxRow
+    // prevents the activated signal from firing when the list row is clicked.
+    row.upcast()
+}
+
+/// Full installed inventories can contain thousands of packages. Keep all
+/// records in the model, but construct widgets only as GTK binds visible rows.
 pub fn paged_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
     use std::{cell::Cell, rc::Rc};
     use tcms_core::{catalog, PackageSource};
@@ -513,6 +579,22 @@ mod tests {
         search.set_text("");
         search.emit_by_name::<()>("search-changed", &[]);
         assert_eq!(list.model().unwrap().n_items(), 2000);
+        let catalog = package_list(&packages, &bridge);
+        window.set_child(Some(&catalog));
+        spin_until(|| !descendants::<libadwaita::ActionRow>(catalog.upcast_ref()).is_empty());
+        let list = descendants::<gtk4::ListView>(catalog.upcast_ref())
+            .pop()
+            .unwrap();
+        assert_eq!(list.model().unwrap().n_items(), 2000);
+        assert!(descendants::<libadwaita::ActionRow>(catalog.upcast_ref()).len() < 500);
+        let adjustment = catalog.vadjustment();
+        spin_until(|| adjustment.page_size() > 0.0 && adjustment.upper() > adjustment.page_size());
+        adjustment.set_value(adjustment.upper() - adjustment.page_size());
+        spin_until(|| {
+            descendants::<libadwaita::ActionRow>(catalog.upcast_ref())
+                .iter()
+                .any(|r| r.title() == "package-01999")
+        });
         window.set_child(gtk4::Widget::NONE);
         window.close();
     }

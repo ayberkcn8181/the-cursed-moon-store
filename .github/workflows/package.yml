@@ -61,7 +61,7 @@ jobs:
             dist/*.pkg.tar.zst
             dist/*.tar.gz
             dist/PKGBUILD
-            dist/.SRCINFO
+            dist/SRCINFO
             dist/SHA256SUMS
             dist/SOURCE_COMMIT
 
@@ -88,5 +88,5 @@ jobs:
           gh release create "$TCMS_RELEASE_TAG" \
             --verify-tag --title "The Cursed Moon Store $TCMS_RELEASE_TAG" \
             --generate-notes \
-            dist/*.pkg.tar.zst dist/*.tar.gz dist/PKGBUILD dist/.SRCINFO \
+            dist/*.pkg.tar.zst dist/*.tar.gz dist/PKGBUILD dist/SRCINFO \
             dist/SHA256SUMS dist/SOURCE_COMMIT

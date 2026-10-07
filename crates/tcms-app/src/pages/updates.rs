@@ -84,6 +84,26 @@ impl UpdatesPage {
                 return;
             }
 
+            let progress_bridge = bridge.clone();
+            let done_bridge = bridge.clone();
+            if bridge.store.download_updates_async(
+                &packages,
+                move |text| progress_bridge.append_progress(text),
+                move |report| {
+                    done_bridge.package_finished();
+                    if report.errors.is_empty() {
+                        done_bridge.toast_msg(&t("downloads.ready"));
+                    } else {
+                        done_bridge.toast_msg(&format!(
+                            "{}: {}",
+                            t("downloads.failed"),
+                            report.errors.join("; ")
+                        ));
+                    }
+                },
+            ) {
+                bridge.package_started(&t("downloads.title"));
+            }
             let header = GtkBox::new(Orientation::Horizontal, 12);
             let summary = gtk4::Label::builder()
                 .label(t_args(
@@ -103,57 +123,53 @@ impl UpdatesPage {
             let bridge_ua = bridge.clone();
             update_all.connect_clicked(move |btn| {
                 use libadwaita::prelude::*;
-                let dialog = libadwaita::AlertDialog::builder()
-                    .heading(t("confirm.update_all_title"))
-                    .body(t("confirm.update_all_body"))
-                    .build();
-                dialog.add_response("cancel", &t("action.cancel"));
-                dialog.add_response("update", &t("updates.update_all"));
-                dialog.set_response_appearance("update", libadwaita::ResponseAppearance::Suggested);
-                dialog.set_default_response(Some("update"));
-                dialog.set_close_response("cancel");
                 let bridge_ua = bridge_ua.clone();
                 let btn = btn.clone();
-                let window = bridge_ua.window.clone();
-                dialog.connect_response(None, move |_, response| {
-                    if response != "update" {
-                        return;
-                    }
-                    btn.set_sensitive(false);
-                    bridge_ua.toast_msg(&t("updates.updating_all"));
-                    bridge_ua.package_started(&t("updates.updating_all"));
-                    let bridge2 = bridge_ua.clone();
-                    let btn = btn.clone();
-                    bridge_ua.store.update_all_async(
-                        {
-                            let bridge = bridge_ua.clone();
-                            move |text| bridge.append_progress(text)
-                        },
-                        move |report| {
+                btn.set_sensitive(false);
+                let confirm_bridge = bridge_ua.clone();
+                confirm_bridge.confirm_preview(
+                    tcms_core::PackageAction::Update,
+                    None,
+                    move |confirmed| {
+                        if !confirmed {
                             btn.set_sensitive(true);
-                            bridge2.package_finished();
-                            let completed = report.completed.join(", ");
-                            let mut body =
-                                t_args("updates.completed_sources", &[("sources", &completed)]);
-                            if !report.errors.is_empty() {
-                                body.push_str("\n\n");
-                                body.push_str(&report.errors.join("\n"));
-                            }
-                            let result_dialog = libadwaita::AlertDialog::builder()
-                                .heading(t(if report.errors.is_empty() {
-                                    "updates.finished"
-                                } else {
-                                    "updates.partial_failure"
-                                }))
-                                .body(body)
-                                .build();
-                            result_dialog.add_response("close", &t("action.close"));
-                            result_dialog.present(Some(&bridge2.window));
-                            (bridge2.reload)();
-                        },
-                    );
-                });
-                dialog.present(Some(&window));
+                            return;
+                        }
+                        btn.set_sensitive(false);
+                        bridge_ua.toast_msg(&t("updates.updating_all"));
+                        bridge_ua.package_started(&t("updates.updating_all"));
+                        let bridge2 = bridge_ua.clone();
+                        let btn = btn.clone();
+                        bridge_ua.store.update_all_async(
+                            {
+                                let bridge = bridge_ua.clone();
+                                move |text| bridge.append_progress(text)
+                            },
+                            move |report| {
+                                btn.set_sensitive(true);
+                                bridge2.package_finished();
+                                let completed = report.completed.join(", ");
+                                let mut body =
+                                    t_args("updates.completed_sources", &[("sources", &completed)]);
+                                if !report.errors.is_empty() {
+                                    body.push_str("\n\n");
+                                    body.push_str(&report.errors.join("\n"));
+                                }
+                                let result_dialog = libadwaita::AlertDialog::builder()
+                                    .heading(t(if report.errors.is_empty() {
+                                        "updates.finished"
+                                    } else {
+                                        "updates.partial_failure"
+                                    }))
+                                    .body(body)
+                                    .build();
+                                result_dialog.add_response("close", &t("action.close"));
+                                result_dialog.present(Some(&bridge2.window));
+                                (bridge2.reload)();
+                            },
+                        );
+                    },
+                );
             });
 
             header.append(&summary);

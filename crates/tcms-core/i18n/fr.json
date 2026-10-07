@@ -38,7 +38,7 @@
   "settings.auto_updates": "Vérification automatique",
   "settings.auto_updates_desc": "Pendant que le magasin est ouvert, rechercher périodiquement les mises à jour",
   "settings.bg_download": "Télécharger en arrière-plan",
-  "settings.bg_download_desc": "Pas encore disponible — préférence enregistrée pour une version future",
+  "settings.bg_download_desc": "Cache pacman and Flatpak updates without installing them. System downloads may request authentication. AUR packages are not built automatically.",
   "settings.sources_group": "Sources activées",
   "settings.sources_group_desc": "Choisir les dépôts visibles dans Explorer, Installés et Mises à jour.",
   "settings.source_pacman": "Dépôts système",
@@ -301,5 +301,10 @@
   "history.copy": "Copy output",
   "history.empty": "No transactions yet",
   "history.save_failed": "Could not save history",
-  "history.close_blocked": "Wait for running operations or cancel queued jobs before closing."
+  "history.close_blocked": "Wait for running operations or cancel queued jobs before closing.",
+  "settings.wait_transaction": "Wait for queued and running transactions before changing settings.",
+  "settings.load_failed": "Settings could not be loaded. Defaults are active. The original file will be backed up when corrected settings are saved.",
+  "downloads.title": "Download updates",
+  "downloads.ready": "Updates downloaded and ready to install",
+  "downloads.failed": "Some updates could not be downloaded"
 }

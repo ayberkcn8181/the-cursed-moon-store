@@ -107,6 +107,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn both_flatpak_scopes_run_even_if_one_fails() {
+        let calls = Arc::new(Mutex::new(vec![]));
+        let user = FakeBackend {
+            id: BackendId::Flatpak,
+            fail: true,
+            calls: calls.clone(),
+        };
+        let system = FakeBackend {
+            id: BackendId::Flatpak,
+            fail: false,
+            calls: calls.clone(),
+        };
+        let report = update_backends(&[&user, &system]).await;
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        assert_eq!(report.completed.len(), 1);
+        assert_eq!(report.errors.len(), 1);
+    }
+    #[tokio::test]
     async fn update_does_not_dispatch_to_install() {
         let calls = Arc::new(Mutex::new(vec![]));
         let backend = FakeBackend {

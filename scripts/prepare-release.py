@@ -53,12 +53,32 @@ def prepare(output, tag=None):
     print(f"Prepared {name}: {checksum}")
 
 
+def write_checksums(output):
+    """Hash exact public filenames; leading dots are normalized during upload."""
+    output = Path(output)
+    packages = sorted(output.glob("*.pkg.tar.zst"))
+    archives = sorted(output.glob("*.tar.gz"))
+    if not packages or not archives:
+        raise ValueError("Missing binary package or source archive")
+    assets = packages + archives + [output / name for name in ("PKGBUILD", "SRCINFO", "SOURCE_COMMIT")]
+    lines = []
+    for asset in assets:
+        if not asset.is_file() or asset.name.startswith("."):
+            raise ValueError(f"Missing or invalid public release asset: {asset.name}")
+        lines.append(f"{hashlib.sha256(asset.read_bytes()).hexdigest()}  {asset.name}\n")
+    (output / "SHA256SUMS").write_text("".join(lines))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=ROOT / "dist")
     parser.add_argument("--tag", help="Require this version tag to point at HEAD")
+    parser.add_argument("--checksums", action="store_true", help="Hash built release assets in --output")
     args = parser.parse_args()
     try:
-        prepare(args.output, args.tag)
+        if args.checksums:
+            write_checksums(args.output)
+        else:
+            prepare(args.output, args.tag)
     except (ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")

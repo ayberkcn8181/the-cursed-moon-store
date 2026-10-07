@@ -127,6 +127,23 @@ impl FlatpakBackend {
         Ok(id)
     }
 
+    pub async fn download_updates(&self) -> Result<()> {
+        self.ensure_enabled()?;
+        let scope = self.scope()?;
+        let args = [
+            "update",
+            "--no-deploy",
+            "--noninteractive",
+            "-y",
+            scope.flag(),
+        ];
+        let out = if scope == FlatpakInstallation::User {
+            run("flatpak", args).await?
+        } else {
+            tcms_core::process::run_privileged("flatpak", &args, "download Flatpak updates").await?
+        };
+        out.ensure_success("download Flatpak updates")
+    }
     fn action_args(
         &self,
         action: &str,

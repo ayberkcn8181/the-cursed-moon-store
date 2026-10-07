@@ -24,6 +24,34 @@ pub fn page(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn source_filter_and_out_of_range_pages_are_clamped() {
+        use crate::{InstallState, Package, PackageSource};
+        let packages = vec![
+            Package::stub(
+                PackageSource::Pacman,
+                "a",
+                "a",
+                "",
+                "1",
+                InstallState::Available,
+            ),
+            Package::stub(
+                PackageSource::Aur,
+                "b",
+                "b",
+                "",
+                "1",
+                InstallState::Available,
+            ),
+        ];
+        let (rows, current, total) = super::page(&packages, Some(PackageSource::Aur), 999);
+        assert_eq!(rows[0].id.id, "b");
+        assert_eq!((current, total), (0, 1));
+        let (rows, current, total) = super::page(&packages, Some(PackageSource::Flatpak), 999);
+        assert!(rows.is_empty());
+        assert_eq!((current, total), (0, 0));
+    }
+    #[test]
     fn every_result_is_reachable() {
         use crate::{InstallState, Package, PackageSource};
         let packages: Vec<_> = (0..185)

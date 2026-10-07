@@ -265,6 +265,17 @@ impl Drop for Running {
 mod tests {
     use super::*;
     #[test]
+    fn interrupted_history_is_not_replayed() {
+        let path = std::env::temp_dir().join(format!("tcms-history-{}.json", std::process::id()));
+        let q = TransactionQueue::load(Some(path.clone()));
+        q.enqueue("unfinished".into());
+        drop(q);
+        let q = TransactionQueue::load(Some(path.clone()));
+        assert!(!q.active());
+        assert_eq!(q.snapshot()[0].status, Status::Interrupted);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn queue_cancels_only_waiting_jobs_and_recovers_from_panic() {
         let q = TransactionQueue::load(None);
         let a = q.enqueue("a".into());
