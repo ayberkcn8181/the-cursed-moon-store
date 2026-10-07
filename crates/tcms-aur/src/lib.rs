@@ -20,16 +20,28 @@ pub struct AurBackend {
 
 #[derive(Debug, Deserialize)]
 struct AurSearchResponse {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
     results: Vec<AurPkg>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AurInfoResponse {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
     results: Vec<AurPkg>,
 }
 
 #[derive(Debug, Deserialize)]
 struct AurPkg {
+    #[serde(rename = "Depends", default)]
+    depends: Vec<String>,
+    #[serde(rename = "MakeDepends", default)]
+    make_depends: Vec<String>,
+    #[serde(rename = "CheckDepends", default)]
+    check_depends: Vec<String>,
     #[serde(rename = "Name")]
     name: String,
     #[serde(rename = "Description")]
@@ -150,6 +162,45 @@ impl AurBackend {
         Ok(map)
     }
 
+    pub async fn installed_listing(&self) -> Result<tcms_core::transactions::PackageListing> {
+        use tcms_core::{transactions::PackageListing, ForeignStatus};
+        self.ensure_enabled()?;
+        let foreign = self.foreign_packages().await?;
+        let names: Vec<_> = foreign.keys().cloned().collect();
+        let (info, errors, known) = match self.rpc_info(&names).await {
+            Ok(info) => (info, vec![], true),
+            Err(e) => (
+                HashMap::new(),
+                vec![format!("AUR classification unavailable: {e}")],
+                false,
+            ),
+        };
+        let mut packages: Vec<_> = foreign
+            .into_iter()
+            .map(|(name, version)| {
+                if let Some(remote) = info.get(&name) {
+                    Self::to_package(remote, InstallState::Installed, Some(version))
+                } else {
+                    let mut p = Package::stub(
+                        PackageSource::Pacman,
+                        &name,
+                        &name,
+                        "",
+                        &version,
+                        InstallState::Installed,
+                    );
+                    p.foreign_status = Some(if known {
+                        ForeignStatus::Local
+                    } else {
+                        ForeignStatus::Unverified
+                    });
+                    p
+                }
+            })
+            .collect();
+        packages.sort_by_key(|p| p.name.to_lowercase());
+        Ok(PackageListing { packages, errors })
+    }
     async fn rpc_search(&self, text: &str) -> Result<Vec<AurPkg>> {
         if text.trim().is_empty() {
             return Ok(Vec::new());
@@ -178,6 +229,9 @@ impl AurBackend {
             .json()
             .await
             .map_err(|e| Error::Message(format!("AUR RPC parse failed: {e}")))?;
+        if let Some(e) = body.error {
+            return Err(Error::Message(format!("AUR RPC: {e}")));
+        }
         Ok(body.results)
     }
 
@@ -215,6 +269,9 @@ impl AurBackend {
                 .json()
                 .await
                 .map_err(|e| Error::Message(format!("AUR info parse failed: {e}")))?;
+            if let Some(e) = body.error {
+                return Err(Error::Message(format!("AUR RPC: {e}")));
+            }
             for pkg in body.results {
                 map.insert(pkg.name.clone(), pkg);
             }
@@ -269,6 +326,7 @@ impl AurBackend {
             size_bytes: None,
             state,
             installed_elsewhere: false,
+            foreign_status: Some(tcms_core::ForeignStatus::InAur),
             categories: vec!["AUR".into()],
         };
         pkg.apply_license_heuristics();
@@ -340,7 +398,7 @@ impl Backend for AurBackend {
                 })
         });
         let mut packages = Vec::new();
-        for pkg in results.into_iter().take(40) {
+        for pkg in results {
             // Skip expensive vercmp during search; Updates tab still does full checks.
             let state = if foreign.contains_key(&pkg.name) {
                 InstallState::Installed
@@ -351,7 +409,7 @@ impl Backend for AurBackend {
             packages.push(Self::to_package(&pkg, state, local));
         }
         Ok(SearchResult {
-            truncated: packages.len() >= 40,
+            truncated: false,
             packages,
         })
     }
@@ -382,25 +440,8 @@ impl Backend for AurBackend {
     }
 
     async fn installed(&self) -> Result<Vec<Package>> {
-        self.ensure_enabled()?;
-        let foreign = self.foreign_packages().await?;
-        let mut packages: Vec<_> = foreign
-            .into_iter()
-            .map(|(name, version)| {
-                Package::stub(
-                    PackageSource::Aur,
-                    &name,
-                    &name,
-                    &tcms_core::i18n::t_args("aur.foreign_summary", &[("name", &name)]),
-                    &version,
-                    InstallState::Installed,
-                )
-            })
-            .collect();
-        packages.sort_by_key(|p| p.name.to_lowercase());
-        Ok(packages)
+        Ok(self.installed_listing().await?.packages)
     }
-
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
         let updates = match self.helper_updates().await {
@@ -432,7 +473,7 @@ impl Backend for AurBackend {
             return Ok(Vec::new());
         }
         let names: Vec<String> = updates.keys().cloned().collect();
-        let info = self.rpc_info(&names).await.unwrap_or_default();
+        let info = self.rpc_info(&names).await?;
         let mut packages = Vec::with_capacity(updates.len());
         for (name, (local_version, available_version)) in updates {
             if let Some(remote) = info.get(&name) {
@@ -440,36 +481,114 @@ impl Backend for AurBackend {
                     Self::to_package(remote, InstallState::Updatable, Some(local_version));
                 package.available_version = Some(available_version);
                 packages.push(package);
-            } else {
-                packages.push(Package {
-                    id: PackageId::new(PackageSource::Aur, &name),
-                    name: name.clone(),
-                    summary: tcms_core::i18n::t_args("aur.foreign_summary", &[("name", &name)]),
-                    description: String::new(),
-                    version: local_version,
-                    available_version: Some(available_version),
-                    icon_name: Some("package-x-generic".into()),
-                    icon_url: None,
-                    desktop_id: None,
-                    publisher: None,
-                    bug_url: Some(format!("https://aur.archlinux.org/packages/{name}")),
-                    donate_url: None,
-                    permissions: Some(tcms_core::i18n::t("perm.aur_package")),
-                    is_proprietary: None,
-                    developer: None,
-                    license: None,
-                    homepage: None,
-                    size_bytes: None,
-                    state: InstallState::Updatable,
-                    installed_elsewhere: false,
-                    categories: vec!["AUR".into()],
-                });
             }
         }
         packages.sort_by_key(|package| package.name.to_lowercase());
         Ok(packages)
     }
 
+    async fn preview(
+        &self,
+        action: tcms_core::PackageAction,
+        id: Option<&PackageId>,
+    ) -> Result<tcms_core::TransactionPreview> {
+        use tcms_core::{PackageAction, PreviewEntry, TransactionPreview};
+        self.ensure_enabled()?;
+        if self
+            .extra_args
+            .split_whitespace()
+            .any(|a| !matches!(a, "--noconfirm" | "--needed"))
+        {
+            return Err(Error::Config("Unsupported preview arguments".into()));
+        }
+        if action == PackageAction::Remove {
+            return tcms_pacman::PacmanBackend::default()
+                .transaction_preview(
+                    action,
+                    &[id.ok_or_else(|| Error::Message("Missing target".into()))?
+                        .id
+                        .clone()],
+                    false,
+                )
+                .await;
+        }
+        let local = self.foreign_packages().await?;
+        let mut pending = if let Some(id) = id {
+            tcms_core::assert_safe_package_id(id)?;
+            vec![id.id.clone()]
+        } else {
+            self.updates().await?.into_iter().map(|p| p.id.id).collect()
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut repos = std::collections::HashSet::new();
+        let mut preview = TransactionPreview::default();
+        while !pending.is_empty() {
+            let batch: Vec<_> = std::mem::take(&mut pending)
+                .into_iter()
+                .filter(|n| seen.insert(n.clone()))
+                .collect();
+            if batch.is_empty() {
+                break;
+            }
+            if seen.len() > 5000 {
+                return Err(Error::Message("AUR dependency graph is too large".into()));
+            }
+            let info = self.rpc_info(&batch).await?;
+            for name in batch {
+                let pkg = info.get(&name).ok_or_else(|| {
+                    Error::Message(format!(
+                        "Cannot resolve AUR dependency {name}; a helper must choose its provider"
+                    ))
+                })?;
+                preview.entries.push(PreviewEntry {
+                    id: PackageId::new(PackageSource::Aur, &name),
+                    action: if local.contains_key(&name) {
+                        PackageAction::Update
+                    } else {
+                        PackageAction::Install
+                    },
+                    old_version: local.get(&name).cloned(),
+                    new_version: Some(pkg.version.clone()),
+                    download_bytes: None,
+                    disk_delta: None,
+                });
+                for dep in pkg
+                    .depends
+                    .iter()
+                    .chain(&pkg.make_depends)
+                    .chain(&pkg.check_depends)
+                {
+                    let name = dep.split(['<', '>', '=']).next().unwrap_or("");
+                    tcms_core::assert_safe_package_id(&PackageId::new(PackageSource::Aur, name))?;
+                    let check = run("pacman", ["-T", "--", dep.as_str()]).await?;
+                    if check.success() {
+                        continue;
+                    }
+                    if check.status != 127 {
+                        check.ensure_success("check AUR dependency")?;
+                    }
+                    if run("pacman", ["-Si", "--", name]).await?.success() {
+                        repos.insert(name.to_string());
+                    } else {
+                        pending.push(name.to_string());
+                    }
+                }
+            }
+        }
+        if !repos.is_empty() {
+            let mut targets: Vec<_> = repos.into_iter().collect();
+            targets.sort();
+            preview.extend(
+                tcms_pacman::PacmanBackend::default()
+                    .transaction_preview(PackageAction::Install, &targets, false)
+                    .await?,
+            );
+        }
+        if !preview.entries.is_empty() {
+            preview.notes.push(tcms_core::t("preview.aur_estimate"));
+        }
+        Ok(preview)
+    }
     async fn install(&self, id: &PackageId) -> Result<()> {
         self.ensure_enabled()?;
         if id.source != PackageSource::Aur {

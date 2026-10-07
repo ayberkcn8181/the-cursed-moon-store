@@ -75,7 +75,7 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
     let version = if pkg.version.is_empty() {
         String::new()
     } else {
-        format!("{} · {}", t(pkg.id.source.i18n_key()), pkg.version)
+        format!("{} · {}", t(pkg.source_i18n_key()), pkg.version)
     };
     if !version.is_empty() {
         titles.append(
@@ -311,7 +311,7 @@ fn source_row(pkg: &Package, bridge: &UiBridge) -> libadwaita::ActionRow {
         state_label_local(pkg.state)
     };
     let row = libadwaita::ActionRow::builder()
-        .title(t(pkg.id.source.i18n_key()))
+        .title(t(pkg.source_i18n_key()))
         .subtitle(format!("{} · {}", pkg.id.display_ref(), state))
         .build();
     let btn = package_action_button(pkg, bridge);

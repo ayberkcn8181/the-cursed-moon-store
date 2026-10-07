@@ -286,6 +286,7 @@ mod tests {
             size_bytes: None,
             state: InstallState::Available,
             installed_elsewhere: false,
+            foreign_status: None,
             categories: vec!["Codec".into()],
         };
         assert!(cfg.allows_package(&app));

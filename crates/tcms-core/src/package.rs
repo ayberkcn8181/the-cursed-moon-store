@@ -158,6 +158,13 @@ pub enum InstallState {
     Removing,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForeignStatus {
+    InAur,
+    Local,
+    Unverified,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: PackageId,
@@ -190,10 +197,20 @@ pub struct Package {
     /// detail page repository rows.
     #[serde(default)]
     pub installed_elsewhere: bool,
+    #[serde(default)]
+    pub foreign_status: Option<ForeignStatus>,
     pub categories: Vec<String>,
 }
 
 impl Package {
+    pub fn source_i18n_key(&self) -> &'static str {
+        match self.foreign_status {
+            Some(ForeignStatus::Local) => "source.local",
+            Some(ForeignStatus::Unverified) => "source.unverified",
+            _ => self.id.source.i18n_key(),
+        }
+    }
+
     pub fn stub(
         source: PackageSource,
         id: &str,
@@ -223,6 +240,7 @@ impl Package {
             size_bytes: None,
             state,
             installed_elsewhere: false,
+            foreign_status: None,
             categories: Vec::new(),
         }
     }

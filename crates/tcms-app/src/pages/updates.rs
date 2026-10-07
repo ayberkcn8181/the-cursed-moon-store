@@ -132,12 +132,7 @@ impl UpdatesPage {
                         move |report| {
                             btn.set_sensitive(true);
                             bridge2.package_finished();
-                            let completed = report
-                                .completed
-                                .iter()
-                                .map(|id| t(id.source().i18n_key()))
-                                .collect::<Vec<_>>()
-                                .join(", ");
+                            let completed = report.completed.join(", ");
                             let mut body =
                                 t_args("updates.completed_sources", &[("sources", &completed)]);
                             if !report.errors.is_empty() {

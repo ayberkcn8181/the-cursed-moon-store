@@ -24,11 +24,18 @@ pub use matching::{
     assert_safe_package_id, is_safe_pkg_token, normalize_app_key, packages_match, search_text_for,
 };
 pub use package::{
-    license_is_proprietary, FlatpakInstallation, FlatpakRef, InstallState, Package, PackageId,
-    PackageSource,
+    license_is_proprietary, FlatpakInstallation, FlatpakRef, ForeignStatus, InstallState, Package,
+    PackageId, PackageSource,
 };
 pub use process::{
     pkexec_path, resolve_program, run, run_checked, run_privileged, run_privileged_pacman,
 };
 pub use util::urlencoding;
 pub mod cache;
+
+pub mod cancel;
+pub mod preview;
+pub use preview::{PreviewEntry, TransactionPreview};
+pub mod atomic_file;
+pub mod catalog;
+pub mod history;

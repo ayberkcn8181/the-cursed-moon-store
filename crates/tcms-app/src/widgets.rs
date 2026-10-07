@@ -10,98 +10,150 @@ use tcms_core::{InstallState, Package, PackageAction};
 use crate::store::UiBridge;
 
 pub fn package_list(packages: &[Package], bridge: &UiBridge) -> ScrolledWindow {
-    let list = ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .build();
-
-    if packages.is_empty() {
-        let empty = libadwaita::StatusPage::builder()
-            .icon_name("edit-find-symbolic")
-            .title(t("package.none_title"))
-            .description(t("package.none_desc"))
-            .build();
-        list.append(&empty);
-    } else {
-        for pkg in packages {
-            list.append(&package_row(pkg, bridge));
-        }
-    }
-
-    ScrolledWindow::builder()
+    let scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vexpand(true)
         .hexpand(true)
-        .child(&list)
-        .build()
-}
-
-fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
-    let version_bit = match (&pkg.available_version, pkg.state) {
-        (Some(avail), InstallState::Updatable) => format!("{} → {avail}", pkg.version),
-        _ => pkg.version.clone(),
-    };
-    let source = match &pkg.id.flatpak {
-        Some(identity) => format!(
-            "{} · {} · {}",
-            identity.origin,
-            identity.branch,
-            identity.installation.label()
-        ),
-        None => t(pkg.id.source.i18n_key()),
-    };
-    let summary = if pkg.summary.chars().count() > 90 {
-        let s: String = pkg.summary.chars().take(87).collect();
-        format!("{s}…")
-    } else {
-        pkg.summary.clone()
-    };
-    let row = libadwaita::ActionRow::builder()
-        .title(&pkg.name)
-        .subtitle(format!("{summary}\n{source} · {version_bit}"))
-        .activatable(true)
         .build();
-
-    let icon = load_package_icon(pkg, bridge, 42);
-    row.add_prefix(&icon);
-
-    let badge = Label::builder()
-        .label(state_label(pkg.state))
-        .css_classes(["dim-label", "caption"])
-        .build();
-    row.add_suffix(&badge);
-
-    if let Some(button) = list_action_button(pkg, bridge) {
-        row.add_suffix(&button);
+    if packages.is_empty() {
+        scroll.set_child(Some(
+            &libadwaita::StatusPage::builder()
+                .icon_name("edit-find-symbolic")
+                .title(t("package.none_title"))
+                .description(t("package.none_desc"))
+                .build(),
+        ));
+        return scroll;
     }
-
-    if pkg.state == InstallState::Updatable && !pkg.installed_elsewhere {
-        let remove_btn = gtk4::Button::builder()
-            .label(t("action.remove"))
-            .valign(gtk4::Align::Center)
-            .css_classes(["flat"])
+    let model = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let items: Vec<_> = packages
+        .iter()
+        .cloned()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    model.splice(0, 0, &items);
+    let factory = gtk4::SignalListItemFactory::new();
+    let bridge = bridge.clone();
+    factory.connect_bind(move |_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let object = item
+            .item()
+            .unwrap()
+            .downcast::<glib::BoxedAnyObject>()
+            .unwrap();
+        let package = object.borrow::<Package>();
+        let host = ListBox::builder()
+            .selection_mode(gtk4::SelectionMode::None)
             .build();
-        let bridge_rm = bridge.clone();
-        let pkg_rm = pkg.clone();
-        remove_btn.connect_clicked(move |btn| {
-            bridge_rm.run_action(PackageAction::Remove, &pkg_rm, btn);
-        });
-        row.add_suffix(&remove_btn);
-    }
-
-    let bridge_open = bridge.clone();
-    let pkg_open = pkg.clone();
-    row.connect_activated(move |_| {
-        bridge_open.open_package(&pkg_open);
+        host.append(&package_row(&package, &bridge));
+        item.set_child(Some(&host));
     });
-
-    // ActionRow is already a ListBoxRow; nesting it inside another ListBoxRow
-    // prevents the activated signal from firing when the list row is clicked.
-    row.upcast()
+    factory.connect_unbind(|_, item| {
+        item.downcast_ref::<gtk4::ListItem>()
+            .unwrap()
+            .set_child(None::<&gtk4::Widget>)
+    });
+    let list = gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(model))), Some(factory));
+    list.add_css_class("boxed-list");
+    scroll.set_child(Some(&list));
+    scroll
 }
 
-/// Full installed inventories can contain thousands of packages. Keep all
-/// records in the model, but construct widgets only as GTK binds visible rows.
+pub fn paged_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
+    use std::{cell::Cell, rc::Rc};
+    use tcms_core::{catalog, PackageSource};
+    let root = GtkBox::new(Orientation::Vertical, 8);
+    let controls = GtkBox::new(Orientation::Horizontal, 8);
+    let source = gtk4::DropDown::from_strings(&[
+        &t("catalog.all_sources"),
+        &t("source.pacman"),
+        &t("source.flatpak"),
+        &t("source.aur"),
+    ]);
+    let previous = gtk4::Button::with_label(&t("catalog.previous"));
+    let next = gtk4::Button::with_label(&t("catalog.next"));
+    let summary = Label::builder().hexpand(true).build();
+    controls.append(&source);
+    controls.append(&previous);
+    controls.append(&summary);
+    controls.append(&next);
+    let host = GtkBox::new(Orientation::Vertical, 0);
+    host.set_vexpand(true);
+    root.append(&controls);
+    root.append(&host);
+    let packages = packages.to_vec();
+    let page = Rc::new(Cell::new(0usize));
+    let selected = Rc::new(Cell::new(None));
+    let render: Rc<dyn Fn()> = {
+        let page = page.clone();
+        let selected = selected.clone();
+        let host = host.downgrade();
+        let previous = previous.downgrade();
+        let next = next.downgrade();
+        let summary = summary.downgrade();
+        let bridge = bridge.clone();
+        Rc::new(move || {
+            let (Some(host), Some(previous), Some(next), Some(summary)) = (
+                host.upgrade(),
+                previous.upgrade(),
+                next.upgrade(),
+                summary.upgrade(),
+            ) else {
+                return;
+            };
+            let (visible, current, total) = catalog::page(&packages, selected.get(), page.get());
+            page.set(current);
+            previous.set_sensitive(current > 0);
+            next.set_sensitive((current + 1) * catalog::PAGE_SIZE < total);
+            summary.set_text(&format!(
+                "{}–{} / {}",
+                if total == 0 {
+                    0
+                } else {
+                    current * catalog::PAGE_SIZE + 1
+                },
+                current * catalog::PAGE_SIZE + visible.len(),
+                total
+            ));
+            while let Some(child) = host.first_child() {
+                host.remove(&child);
+            }
+            host.append(&package_list(&visible, &bridge));
+        })
+    };
+    {
+        let render = render.clone();
+        let page = page.clone();
+        previous.connect_clicked(move |_| {
+            page.set(page.get().saturating_sub(1));
+            render();
+        });
+    }
+    {
+        let render = render.clone();
+        let page = page.clone();
+        next.connect_clicked(move |_| {
+            page.set(page.get() + 1);
+            render();
+        });
+    }
+    {
+        let render = render.clone();
+        source.connect_selected_notify(move |d| {
+            selected.set(match d.selected() {
+                1 => Some(PackageSource::Pacman),
+                2 => Some(PackageSource::Flatpak),
+                3 => Some(PackageSource::Aur),
+                _ => None,
+            });
+            page.set(0);
+            render();
+        });
+    }
+    render();
+    root
+}
+
 pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
     let content = GtkBox::new(Orientation::Vertical, 8);
     let search = gtk4::SearchEntry::builder()

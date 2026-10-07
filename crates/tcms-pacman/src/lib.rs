@@ -124,6 +124,139 @@ impl PacmanBackend {
         parse_checkupdates(&out)
     }
 
+    /// Resolve against checkupdates' private database; never refresh the live database.
+    pub async fn transaction_preview(
+        &self,
+        action: tcms_core::PackageAction,
+        targets: &[String],
+        full_upgrade: bool,
+    ) -> Result<tcms_core::TransactionPreview> {
+        use tcms_core::{PackageAction, PreviewEntry, TransactionPreview};
+        self.ensure_enabled()?;
+        for target in targets {
+            tcms_core::assert_safe_package_id(&PackageId::new(PackageSource::Pacman, target))?;
+        }
+        if self
+            .extra_args
+            .split_whitespace()
+            .any(|a| !matches!(a, "--noconfirm" | "--needed"))
+        {
+            return Err(Error::Config("Unsupported preview arguments".into()));
+        }
+        let mut base = self.conf_args();
+        if action != PackageAction::Remove {
+            self.available_updates().await?;
+            let db = dirs::cache_dir()
+                .ok_or_else(|| Error::Config("missing cache directory".into()))?
+                .join("the-cursed-moon-store/checkupdates");
+            base.extend(["--dbpath".into(), db.to_string_lossy().into_owned()]);
+        }
+        let _guard = UPDATE_CHECK.lock().await;
+        let mut args = base.clone();
+        args.extend([
+            if action == PackageAction::Remove {
+                "-Rnsp"
+            } else if full_upgrade {
+                "-Sup"
+            } else {
+                "-Sp"
+            }
+            .into(),
+            "--noconfirm".into(),
+            "--print-format".into(),
+            "%n\t%v\t%s".into(),
+        ]);
+        if action != PackageAction::Remove {
+            args.push("--needed".into());
+        }
+        args.push("--".into());
+        args.extend_from_slice(targets);
+        let out = run("pacman", &args).await?;
+        out.ensure_success("pacman preview")?;
+        let mut preview = TransactionPreview::default();
+        for line in out.stdout.lines().filter(|l| !l.trim().is_empty()) {
+            let f: Vec<_> = line.split('\t').collect();
+            if f.len() != 3 {
+                return Err(Error::Message(format!("Unexpected preview output: {line}")));
+            }
+            let id = PackageId::new(PackageSource::Pacman, f[0]);
+            tcms_core::assert_safe_package_id(&id)?;
+            let size = f[2]
+                .parse::<u64>()
+                .map_err(|_| Error::Message("Invalid preview size".into()))?;
+            preview.entries.push(PreviewEntry {
+                id,
+                action,
+                old_version: None,
+                new_version: Some(f[1].into()),
+                download_bytes: Some(if action == PackageAction::Remove {
+                    0
+                } else {
+                    size
+                }),
+                disk_delta: if action == PackageAction::Remove {
+                    Some(-i128::from(size))
+                } else {
+                    None
+                },
+            });
+        }
+        for chunk in preview.entries.chunks_mut(100) {
+            let names: Vec<_> = chunk.iter().map(|e| e.id.id.clone()).collect();
+            let mut args = self.conf_args();
+            args.extend(["-Qi".into(), "--".into()]);
+            args.extend(names.clone());
+            let local = run("pacman", &args).await?;
+            if local.status > 1 {
+                local.ensure_success("preview local metadata")?;
+            }
+            let parse = |output: &str| -> HashMap<String, PacmanInfo> {
+                output
+                    .split("\n\n")
+                    .filter_map(|b| {
+                        let i = parse_package_info(b);
+                        Some((i.name.clone()?, i))
+                    })
+                    .collect()
+            };
+            let local = parse(&local.stdout);
+            let remote = if action != PackageAction::Remove {
+                let mut args = base.clone();
+                args.extend(["-Si".into(), "--".into()]);
+                args.extend(names);
+                let out = run("pacman", &args).await?;
+                out.ensure_success("preview metadata")?;
+                parse(&out.stdout)
+            } else {
+                HashMap::new()
+            };
+            for e in chunk {
+                let old = local.get(&e.id.id);
+                e.old_version = old.and_then(|i| i.version.clone());
+                if action == PackageAction::Remove {
+                    e.new_version = None;
+                } else {
+                    e.action = if old.is_some() {
+                        PackageAction::Update
+                    } else {
+                        PackageAction::Install
+                    };
+                    e.disk_delta = remote
+                        .get(&e.id.id)
+                        .and_then(|i| i.size_bytes)
+                        .zip(old.map_or(Some(0), |i| i.size_bytes))
+                        .map(|(n, o)| i128::from(n) - i128::from(o));
+                }
+            }
+        }
+        if full_upgrade {
+            preview
+                .notes
+                .push(tcms_core::t("confirm.system_upgrade_body"));
+        }
+        Ok(preview)
+    }
+
     fn upgrade_args(&self, package: Option<&str>) -> Vec<String> {
         let mut args = self.conf_args();
         args.extend(["-Syu".into(), "--noconfirm".into(), "--needed".into()]);
@@ -173,6 +306,7 @@ impl PacmanBackend {
             size_bytes: None,
             state,
             installed_elsewhere: false,
+            foreign_status: None,
             categories: app.categories.clone(),
         })
     }
@@ -241,12 +375,9 @@ impl PacmanBackend {
                 size_bytes: None,
                 state,
                 installed_elsewhere: false,
+                foreign_status: None,
                 categories: Vec::new(),
             });
-
-            if packages.len() >= 60 {
-                break;
-            }
         }
         Ok(packages)
     }
@@ -287,6 +418,7 @@ impl PacmanBackend {
                     InstallState::Available
                 },
                 installed_elsewhere: false,
+                foreign_status: None,
                 categories: Vec::new(),
             };
             pkg.apply_license_heuristics();
@@ -384,6 +516,20 @@ impl Backend for PacmanBackend {
             }
         };
         enrich_installed(&mut packages, &apps, &updates);
+        let mut args = self.conf_args();
+        args.push("-Qmq".into());
+        match run("pacman", &args).await {
+            Ok(out) if out.success() || (out.status == 1 && out.stderr.trim().is_empty()) => {
+                let foreign: std::collections::HashSet<_> = out.stdout.lines().collect();
+                for pkg in &mut packages {
+                    if foreign.contains(pkg.id.id.as_str()) {
+                        pkg.foreign_status = Some(tcms_core::ForeignStatus::Unverified);
+                    }
+                }
+            }
+            other => tracing::warn!(?other, "could not classify foreign packages"),
+        }
+
         packages.sort_by_key(|a| a.name.to_lowercase());
         Ok(packages)
     }
@@ -391,19 +537,25 @@ impl Backend for PacmanBackend {
     async fn updates(&self) -> Result<Vec<Package>> {
         self.ensure_enabled()?;
         let updates = self.available_updates().await?;
-        let mut packages = Vec::new();
-        for (name, new_ver) in updates {
+        let mut metadata = HashMap::new();
+        let names: Vec<_> = updates.keys().cloned().collect();
+        for chunk in names.chunks(100) {
             let mut args = self.conf_args();
             args.push("-Qi".into());
-            args.push(name.clone());
-            let info = run("pacman", &args)
-                .await
-                .unwrap_or(tcms_core::process::CommandOutput {
-                    status: 1,
-                    stdout: String::new(),
-                    stderr: String::new(),
-                });
-            let (desc, old_ver) = parse_qi(&info.stdout);
+            args.extend_from_slice(chunk);
+            let out = run("pacman", &args).await?;
+            out.ensure_success("pacman update metadata")?;
+            for block in out.stdout.split("\n\n") {
+                let i = parse_package_info(block);
+                if let Some(name) = i.name.clone() {
+                    metadata.insert(name, i);
+                }
+            }
+        }
+        let mut packages = Vec::new();
+        for (name, new_ver) in updates {
+            let info = metadata.remove(&name).unwrap_or_default();
+            let (desc, old_ver) = (info.description, info.version);
             packages.push(Package {
                 id: PackageId::new(PackageSource::Pacman, &name),
                 name: name.clone(),
@@ -425,6 +577,7 @@ impl Backend for PacmanBackend {
                 size_bytes: None,
                 state: InstallState::Updatable,
                 installed_elsewhere: false,
+                foreign_status: None,
                 categories: Vec::new(),
             });
         }
@@ -432,6 +585,23 @@ impl Backend for PacmanBackend {
         Ok(packages)
     }
 
+    async fn preview(
+        &self,
+        action: tcms_core::PackageAction,
+        id: Option<&PackageId>,
+    ) -> Result<tcms_core::TransactionPreview> {
+        use tcms_core::PackageAction;
+        let targets = if action == PackageAction::Update {
+            vec![]
+        } else {
+            vec![id
+                .ok_or_else(|| Error::Message("Missing target".into()))?
+                .id
+                .clone()]
+        };
+        self.transaction_preview(action, &targets, action != PackageAction::Remove)
+            .await
+    }
     async fn install(&self, id: &PackageId) -> Result<()> {
         self.ensure_enabled()?;
         if id.source != PackageSource::Pacman {
@@ -541,11 +711,6 @@ fn parse_checkupdates(out: &tcms_core::process::CommandOutput) -> Result<HashMap
     Ok(updates)
 }
 
-fn parse_qi(stdout: &str) -> (Option<String>, Option<String>) {
-    let info = parse_package_info(stdout);
-    (info.description, info.version)
-}
-
 #[derive(Default)]
 struct PacmanInfo {
     name: Option<String>,
@@ -592,7 +757,7 @@ fn parse_package_info(stdout: &str) -> PacmanInfo {
             "URL" => info.url = Some(value.to_string()),
             "Licenses" => info.licenses = Some(value.to_string()),
             "Packager" => info.packager = Some(value.to_string()),
-            "Installed Size" | "Download Size" => {
+            "Installed Size" => {
                 info.size_bytes = info.size_bytes.or_else(|| parse_size_bytes(value));
             }
             _ => {}

@@ -22,7 +22,10 @@ pub enum ListKind {
 
 #[derive(Clone)]
 pub struct StoreService {
+    pub history: Arc<tcms_core::history::TransactionQueue>,
     inner: Arc<std::sync::Mutex<StoreInner>>,
+    search_cancel: Arc<std::sync::Mutex<tcms_core::cancel::Cancellation>>,
+    updates_cache: Arc<tcms_core::cache::SnapshotCache<PackageListing>>,
     runtime: Arc<tokio::runtime::Runtime>,
     installed_cache: Arc<tcms_core::cache::SnapshotCache<PackageListing>>,
 }
@@ -63,6 +66,11 @@ impl StoreService {
             .build()
             .expect("tokio runtime");
         Self {
+            history: tcms_core::history::TransactionQueue::application(),
+            search_cancel: Arc::new(std::sync::Mutex::new(Default::default())),
+            updates_cache: Arc::new(tcms_core::cache::SnapshotCache::new(Duration::from_secs(
+                30,
+            ))),
             inner: Arc::new(std::sync::Mutex::new(StoreInner {
                 config,
                 pacman,
@@ -129,6 +137,7 @@ impl StoreService {
                 .set_extra_args(config.advanced.aur_extra_args.clone());
             inner.config = config;
             self.installed_cache.invalidate();
+            self.updates_cache.invalidate();
             Ok(())
         })
     }
@@ -139,14 +148,26 @@ impl StoreService {
         packages
     }
 
-    pub fn explore(&self, text: &str) -> PackageListing {
+    pub fn cancel_search(&self) {
+        self.search_cancel
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .cancel();
+    }
+    fn explore(&self, text: &str, cancel: &tcms_core::cancel::Cancellation) -> PackageListing {
         if text.trim().is_empty() {
             return PackageListing::default();
         }
-        let mut listing = self.search(SearchQuery {
-            text: text.to_string(),
-            ..Default::default()
-        });
+        let mut listing = self.search(
+            SearchQuery {
+                text: text.to_string(),
+                ..Default::default()
+            },
+            cancel,
+        );
+        if cancel.is_cancelled() {
+            return PackageListing::default();
+        }
         listing.packages = self.filter_catalog(listing.packages);
         listing
             .errors
@@ -189,6 +210,7 @@ impl StoreService {
             })
             .unwrap_or_else(|| pkg.clone());
 
+        detailed.foreign_status = pkg.foreign_status;
         // Keep the list entry's nicer display name / icon when backends return stubs.
         if !pkg.name.is_empty()
             && pkg.name != detailed.id.id
@@ -357,7 +379,8 @@ impl StoreService {
     pub fn updates(&self) -> PackageListing {
         // Updates should list everything pacman/Flatpak/AUR report — do not hide
         // system/codec/driver packages behind Explore visibility toggles.
-        self.collect_updates()
+        self.updates_cache
+            .get_or_load(|| self.collect_updates(), |l| l.errors.is_empty())
     }
 
     /// Featured home sections — apps only (never codecs/drivers/system).
@@ -493,6 +516,7 @@ impl StoreService {
             errors
         });
         self.installed_cache.invalidate();
+        self.updates_cache.invalidate();
         errors
     }
 
@@ -517,15 +541,17 @@ impl StoreService {
         action: PackageAction,
         id: &PackageId,
         progress: mpsc::SyncSender<String>,
+        log: tcms_core::history::Transcript,
     ) -> tcms_core::Result<()> {
         let _ = progress.try_send(tcms_core::i18n::t("transaction.queued"));
         let _transaction = PACKAGE_TRANSACTIONS
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let (pacman, flatpak, aur) = self.backends();
-        let result = self
-            .runtime
-            .block_on(tcms_core::process::with_progress(progress, async {
+        let result = self.runtime.block_on(tcms_core::process::with_progress_log(
+            progress,
+            log,
+            async {
                 tcms_core::process::report_progress(&format!(
                     "\n=== {:?}: {} ===\n",
                     action,
@@ -551,8 +577,10 @@ impl StoreService {
                         aur.apply(action, id).await
                     }
                 }
-            }));
+            },
+        ));
         self.installed_cache.invalidate();
+        self.updates_cache.invalidate();
         result
     }
 
@@ -569,9 +597,23 @@ impl StoreService {
         let (tx, rx) = mpsc::channel();
         let (progress, progress_rx) = mpsc::sync_channel(64);
         poll_progress(progress_rx, on_progress);
+        let job = self
+            .history
+            .enqueue(format!("{:?}: {}", action, id.display_ref()));
         if !spawn_named("tcms-pkg-op", move || {
-            let _ = tx.send(store.apply_action(action, &id, progress));
+            let Some(running) = store.history.acquire(job) else {
+                let _ = tx.send(Err(tcms_core::Error::Cancelled));
+                return;
+            };
+            let result = store.apply_action(action, &id, progress, running.log.clone());
+            store.history.finish(
+                job,
+                result.as_ref().err().map(ToString::to_string).as_deref(),
+            );
+            let _ = tx.send(result);
         }) {
+            self.history
+                .finish(job, Some("failed to start package operation thread"));
             on_done(Err(tcms_core::Error::Message(
                 "failed to start package operation thread".into(),
             )));
@@ -594,19 +636,40 @@ impl StoreService {
         let (tx, rx) = mpsc::channel();
         let (progress, progress_rx) = mpsc::sync_channel(64);
         poll_progress(progress_rx, on_progress);
+        let job = self.history.enqueue(tcms_core::t("updates.update_all"));
         if !spawn_named("tcms-update-all", move || {
+            let Some(running) = store.history.acquire(job) else {
+                let _ = tx.send(UpdateReport {
+                    completed: vec![],
+                    errors: vec![tcms_core::t("history.cancelled")],
+                });
+                return;
+            };
             let _ = progress.try_send(tcms_core::i18n::t("transaction.queued"));
             let _transaction = PACKAGE_TRANSACTIONS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             let (pacman, flatpak, aur) = store.backends();
-            let report = store.runtime.block_on(tcms_core::process::with_progress(
-                progress,
-                update_backends(&[&pacman, &flatpak, &aur]),
-            ));
+            let [user, system] = flatpak.installations();
+            let report = store
+                .runtime
+                .block_on(tcms_core::process::with_progress_log(
+                    progress,
+                    running.log.clone(),
+                    update_backends(&[&pacman, &user, &system, &aur]),
+                ));
             store.installed_cache.invalidate();
+            store.updates_cache.invalidate();
+            store.history.finish(
+                job,
+                (!report.errors.is_empty())
+                    .then(|| report.errors.join("; "))
+                    .as_deref(),
+            );
             let _ = tx.send(report);
         }) {
+            self.history
+                .finish(job, Some("failed to start update worker"));
             on_done(UpdateReport {
                 completed: vec![],
                 errors: vec!["failed to start update worker".into()],
@@ -654,9 +717,17 @@ impl StoreService {
     {
         let store = self.clone();
         let (tx, rx) = mpsc::channel();
+        let cancel = if matches!(kind, ListKind::Explore) {
+            let mut c = self.search_cancel.lock().unwrap_or_else(|e| e.into_inner());
+            c.cancel();
+            *c = Default::default();
+            c.clone()
+        } else {
+            Default::default()
+        };
         if !spawn_named("tcms-fetch", move || {
             let packages = match kind {
-                ListKind::Explore => store.explore(&query),
+                ListKind::Explore => store.explore(&query, &cancel),
                 ListKind::Installed => store.installed(),
             };
             let _ = tx.send(packages);
@@ -692,33 +763,39 @@ impl StoreService {
         poll_local(rx, Vec::new(), on_done);
     }
 
-    fn search(&self, query: SearchQuery) -> PackageListing {
+    fn search(
+        &self,
+        query: SearchQuery,
+        cancel: &tcms_core::cancel::Cancellation,
+    ) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
         self.runtime.block_on(async {
-            let (p, f, a) = tokio::join!(
-                async {
-                    if pacman.enabled() {
-                        Some(pacman.search(&query).await.map(|r| r.packages))
-                    } else {
-                        None
-                    }
-                },
-                async {
-                    if flatpak.enabled() {
-                        Some(flatpak.search(&query).await.map(|r| r.packages))
-                    } else {
-                        None
-                    }
-                },
-                async {
-                    if aur.enabled() {
-                        Some(aur.search(&query).await.map(|r| r.packages))
-                    } else {
-                        None
-                    }
-                },
-            );
-            collect_results([("pacman", p), ("flatpak", f), ("aur", a)])
+            tokio::select! { _=cancel.cancelled()=>PackageListing::default(), listing=async {
+                let (p, f, a) = tokio::join!(
+                    async {
+                        if pacman.enabled() {
+                            Some(pacman.search(&query).await.map(|r| r.packages))
+                        } else {
+                            None
+                        }
+                    },
+                    async {
+                        if flatpak.enabled() {
+                            Some(flatpak.search(&query).await.map(|r| r.packages))
+                        } else {
+                            None
+                        }
+                    },
+                    async {
+                        if aur.enabled() {
+                            Some(aur.search(&query).await.map(|r| r.packages))
+                        } else {
+                            None
+                        }
+                    },
+                );
+                collect_results([("pacman", p), ("flatpak", f), ("aur", a)])
+            } => listing }
         })
     }
 
@@ -760,19 +837,27 @@ impl StoreService {
                 },
                 async {
                     if aur.enabled() {
-                        Some(aur.installed().await)
+                        Some(aur.installed_listing().await)
                     } else {
                         None
                     }
                 },
             );
-            if let Some(Ok(aur_packages)) = &a {
-                let names: std::collections::HashSet<_> =
-                    aur_packages.iter().map(|p| p.id.id.as_str()).collect();
-                if let Some(Ok(desktop_packages)) = &mut p {
-                    for pkg in desktop_packages {
-                        if names.contains(pkg.id.id.as_str()) {
-                            pkg.id.source = PackageSource::Aur;
+            let mut classification_errors = Vec::new();
+            let a = a.map(|r| {
+                r.map(|l| {
+                    classification_errors = l.errors;
+                    l.packages
+                })
+            });
+            if let Some(Ok(foreign)) = &a {
+                let by_name: std::collections::HashMap<_, _> =
+                    foreign.iter().map(|p| (p.id.id.as_str(), p)).collect();
+                if let Some(Ok(packages)) = &mut p {
+                    for package in packages {
+                        if let Some(c) = by_name.get(package.id.id.as_str()) {
+                            package.id.source = c.id.source;
+                            package.foreign_status = c.foreign_status;
                         }
                     }
                 }
@@ -783,6 +868,7 @@ impl StoreService {
                 ("flatpak(system)", fs),
                 ("aur", a),
             ]);
+            listing.errors.extend(classification_errors);
             let mut seen = std::collections::HashSet::new();
             listing.packages.retain(|p| seen.insert(p.id.clone()));
             listing.packages.sort_by_key(|p| p.name.to_lowercase());
@@ -792,23 +878,46 @@ impl StoreService {
 
     fn collect_updates(&self) -> PackageListing {
         let (pacman, flatpak, aur) = self.backends();
+        let [user, system] = flatpak.installations();
         self.runtime.block_on(async {
-            let mut listing = PackageListing::default();
-            for backend in [&pacman as &dyn Backend, &flatpak, &aur] {
-                if !backend.enabled() {
-                    continue;
+            let (p, u, s, a) = tokio::join!(
+                async {
+                    if pacman.enabled() {
+                        Some(pacman.updates().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if user.enabled() {
+                        Some(user.updates().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if system.enabled() {
+                        Some(system.updates().await)
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    if aur.enabled() {
+                        Some(aur.updates().await)
+                    } else {
+                        None
+                    }
                 }
-                match backend.updates().await {
-                    Ok(packages) => listing.packages.extend(packages),
-                    Err(error) => listing
-                        .errors
-                        .push(format!("{}: {error}", backend.id().as_str())),
-                }
-            }
-            listing
-                .packages
-                .sort_by_key(|package| package.name.to_lowercase());
-            listing
+            );
+            let mut l = collect_results([
+                ("pacman", p),
+                ("flatpak(user)", u),
+                ("flatpak(system)", s),
+                ("aur", a),
+            ]);
+            l.packages.sort_by_key(|p| p.name.to_lowercase());
+            l
         })
     }
 }
@@ -1113,7 +1222,11 @@ impl UiBridge {
                         }
                         (bridge.reload)();
                     }
+                    Err(tcms_core::Error::Cancelled) => {
+                        bridge.toast_msg(&tcms_core::t("history.cancelled"))
+                    }
                     Err(err) => {
+                        (bridge.reload)();
                         bridge.toast_msg(&t_args(
                             "toast.failed",
                             &[("name", &name), ("error", &err.to_string())],
@@ -1157,7 +1270,7 @@ impl UiBridge {
         for (idx, candidate) in candidates.iter().enumerate() {
             let label = format!(
                 "{} — {}",
-                t(candidate.id.source.i18n_key()),
+                t(candidate.source_i18n_key()),
                 candidate.id.display_ref()
             );
             dialog.add_response(&idx.to_string(), &label);
