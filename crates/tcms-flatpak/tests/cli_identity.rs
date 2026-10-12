@@ -74,7 +74,10 @@ esac
     backend.install(beta).await.unwrap();
     backend.update(beta).await.unwrap();
     backend.remove(beta).await.unwrap();
+    backend.set_installation("user");
+    backend.download_updates().await.unwrap();
     let calls = fs::read_to_string(root.join("calls")).unwrap();
+    assert!(calls.contains("update --no-deploy --noninteractive -y --user"));
     assert!(calls
         .contains("install -y --user --noninteractive -- testing app/org.example.App/x86_64/beta"));
     assert!(

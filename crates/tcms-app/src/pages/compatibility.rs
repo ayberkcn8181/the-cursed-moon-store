@@ -258,7 +258,7 @@ fn install_row(
     let content = content.clone();
     button.connect_clicked(move |button| {
         button.set_sensitive(false);
-        bridge.set_activity(Some(&t("compat.installing")));
+        bridge.package_started(&t("compat.installing"));
         let runtime = bridge.store.runtime();
         let allow_prerelease = bridge.store.config().compatibility.release_channel == "prerelease";
         let installation = installation.clone();
@@ -294,7 +294,7 @@ fn install_row(
             },
             move |result| {
                 button_done.set_sensitive(true);
-                bridge_done.set_activity(None);
+                bridge_done.package_finished();
                 match result {
                     Ok(name) => {
                         bridge_done.toast_msg(&t_args("compat.installed", &[("name", &name)]))
@@ -552,7 +552,7 @@ fn dxvk_row(
         let allow_prerelease = bridge.store.config().compatibility.release_channel == "prerelease";
         let bridge_done = bridge.clone();
         let content_done = content.clone();
-        bridge.set_activity(Some(&t("compat.dxvk_working")));
+        bridge.package_started(&t("compat.dxvk_working"));
         run_action(
             move || {
                 let prefix = game
@@ -584,7 +584,7 @@ fn dxvk_row(
                 config_result
             },
             move |result| {
-                bridge_done.set_activity(None);
+                bridge_done.package_finished();
                 match result {
                     Ok(()) => bridge_done.toast_msg(&t("compat.game_updated")),
                     Err(error) => bridge_done.toast_msg(&t_args(

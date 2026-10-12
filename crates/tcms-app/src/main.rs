@@ -1,6 +1,7 @@
 mod icon_loader;
 mod pages;
 mod store;
+mod transaction_center;
 mod widgets;
 mod window;
 
@@ -41,9 +42,19 @@ fn main() -> Result<()> {
 
     let store = store::StoreService::new();
     app.connect_activate(move |app| {
+        if store.history.active() {
+            if let Some(window) = app.active_window() {
+                window.present();
+                return;
+            }
+        }
         // Replace existing windows when reloading UI (e.g. language change).
         for win in app.windows() {
             win.close();
+        }
+        if let Some(window) = app.active_window() {
+            window.present();
+            return;
         }
         let window = StoreWindow::new(app, store.clone());
         window.present();

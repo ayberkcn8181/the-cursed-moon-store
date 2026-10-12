@@ -10,30 +10,53 @@ use tcms_core::{InstallState, Package, PackageAction};
 use crate::store::UiBridge;
 
 pub fn package_list(packages: &[Package], bridge: &UiBridge) -> ScrolledWindow {
-    let list = ListBox::builder()
-        .selection_mode(gtk4::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .build();
-
-    if packages.is_empty() {
-        let empty = libadwaita::StatusPage::builder()
-            .icon_name("edit-find-symbolic")
-            .title(t("package.none_title"))
-            .description(t("package.none_desc"))
-            .build();
-        list.append(&empty);
-    } else {
-        for pkg in packages {
-            list.append(&package_row(pkg, bridge));
-        }
-    }
-
-    ScrolledWindow::builder()
+    let scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vexpand(true)
         .hexpand(true)
-        .child(&list)
-        .build()
+        .build();
+    if packages.is_empty() {
+        scroll.set_child(Some(
+            &libadwaita::StatusPage::builder()
+                .icon_name("edit-find-symbolic")
+                .title(t("package.none_title"))
+                .description(t("package.none_desc"))
+                .build(),
+        ));
+        return scroll;
+    }
+    let model = gio::ListStore::new::<glib::BoxedAnyObject>();
+    let items: Vec<_> = packages
+        .iter()
+        .cloned()
+        .map(glib::BoxedAnyObject::new)
+        .collect();
+    model.splice(0, 0, &items);
+    let factory = gtk4::SignalListItemFactory::new();
+    let bridge = bridge.clone();
+    factory.connect_bind(move |_, item| {
+        let item = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let object = item
+            .item()
+            .unwrap()
+            .downcast::<glib::BoxedAnyObject>()
+            .unwrap();
+        let package = object.borrow::<Package>();
+        let host = ListBox::builder()
+            .selection_mode(gtk4::SelectionMode::None)
+            .build();
+        host.append(&package_row(&package, &bridge));
+        item.set_child(Some(&host));
+    });
+    factory.connect_unbind(|_, item| {
+        item.downcast_ref::<gtk4::ListItem>()
+            .unwrap()
+            .set_child(None::<&gtk4::Widget>)
+    });
+    let list = gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(model))), Some(factory));
+    list.add_css_class("boxed-list");
+    scroll.set_child(Some(&list));
+    scroll
 }
 
 fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
@@ -48,7 +71,7 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
             identity.branch,
             identity.installation.label()
         ),
-        None => t(pkg.id.source.i18n_key()),
+        None => t(pkg.source_i18n_key()),
     };
     let summary = if pkg.summary.chars().count() > 90 {
         let s: String = pkg.summary.chars().take(87).collect();
@@ -102,6 +125,101 @@ fn package_row(pkg: &Package, bridge: &UiBridge) -> ListBoxRow {
 
 /// Full installed inventories can contain thousands of packages. Keep all
 /// records in the model, but construct widgets only as GTK binds visible rows.
+pub fn paged_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
+    use std::{cell::Cell, rc::Rc};
+    use tcms_core::{catalog, PackageSource};
+    let root = GtkBox::new(Orientation::Vertical, 8);
+    let controls = GtkBox::new(Orientation::Horizontal, 8);
+    let source = gtk4::DropDown::from_strings(&[
+        &t("catalog.all_sources"),
+        &t("source.pacman"),
+        &t("source.flatpak"),
+        &t("source.aur"),
+    ]);
+    let previous = gtk4::Button::with_label(&t("catalog.previous"));
+    let next = gtk4::Button::with_label(&t("catalog.next"));
+    let summary = Label::builder().hexpand(true).build();
+    controls.append(&source);
+    controls.append(&previous);
+    controls.append(&summary);
+    controls.append(&next);
+    let host = GtkBox::new(Orientation::Vertical, 0);
+    host.set_vexpand(true);
+    root.append(&controls);
+    root.append(&host);
+    let packages = packages.to_vec();
+    let page = Rc::new(Cell::new(0usize));
+    let selected = Rc::new(Cell::new(None));
+    let render: Rc<dyn Fn()> = {
+        let page = page.clone();
+        let selected = selected.clone();
+        let host = host.downgrade();
+        let previous = previous.downgrade();
+        let next = next.downgrade();
+        let summary = summary.downgrade();
+        let bridge = bridge.clone();
+        Rc::new(move || {
+            let (Some(host), Some(previous), Some(next), Some(summary)) = (
+                host.upgrade(),
+                previous.upgrade(),
+                next.upgrade(),
+                summary.upgrade(),
+            ) else {
+                return;
+            };
+            let (visible, current, total) = catalog::page(&packages, selected.get(), page.get());
+            page.set(current);
+            previous.set_sensitive(current > 0);
+            next.set_sensitive((current + 1) * catalog::PAGE_SIZE < total);
+            summary.set_text(&format!(
+                "{}–{} / {}",
+                if total == 0 {
+                    0
+                } else {
+                    current * catalog::PAGE_SIZE + 1
+                },
+                current * catalog::PAGE_SIZE + visible.len(),
+                total
+            ));
+            while let Some(child) = host.first_child() {
+                host.remove(&child);
+            }
+            host.append(&package_list(&visible, &bridge));
+        })
+    };
+    {
+        let render = render.clone();
+        let page = page.clone();
+        previous.connect_clicked(move |_| {
+            page.set(page.get().saturating_sub(1));
+            render();
+        });
+    }
+    {
+        let render = render.clone();
+        let page = page.clone();
+        next.connect_clicked(move |_| {
+            page.set(page.get() + 1);
+            render();
+        });
+    }
+    {
+        let render = render.clone();
+        source.connect_selected_notify(move |d| {
+            selected.set(match d.selected() {
+                1 => Some(PackageSource::Pacman),
+                2 => Some(PackageSource::Flatpak),
+                3 => Some(PackageSource::Aur),
+                _ => None,
+            });
+            page.set(0);
+            render();
+        });
+    }
+    render();
+    root
+}
+
 pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
     let content = GtkBox::new(Orientation::Vertical, 8);
     let search = gtk4::SearchEntry::builder()
@@ -461,6 +579,22 @@ mod tests {
         search.set_text("");
         search.emit_by_name::<()>("search-changed", &[]);
         assert_eq!(list.model().unwrap().n_items(), 2000);
+        let catalog = package_list(&packages, &bridge);
+        window.set_child(Some(&catalog));
+        spin_until(|| !descendants::<libadwaita::ActionRow>(catalog.upcast_ref()).is_empty());
+        let list = descendants::<gtk4::ListView>(catalog.upcast_ref())
+            .pop()
+            .unwrap();
+        assert_eq!(list.model().unwrap().n_items(), 2000);
+        assert!(descendants::<libadwaita::ActionRow>(catalog.upcast_ref()).len() < 500);
+        let adjustment = catalog.vadjustment();
+        spin_until(|| adjustment.page_size() > 0.0 && adjustment.upper() > adjustment.page_size());
+        adjustment.set_value(adjustment.upper() - adjustment.page_size());
+        spin_until(|| {
+            descendants::<libadwaita::ActionRow>(catalog.upcast_ref())
+                .iter()
+                .any(|r| r.title() == "package-01999")
+        });
         window.set_child(gtk4::Widget::NONE);
         window.close();
     }

@@ -17,7 +17,7 @@ jobs:
           dnf -y install \
             gcc gcc-c++ clang make git curl \
             pkgconf-pkg-config \
-            gtk4-devel libadwaita-devel \
+            gtk4-devel libadwaita-devel flatpak-devel flatpak \
             openssl-devel xz-devel xorg-x11-server-Xvfb
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -38,6 +38,8 @@ jobs:
             sleep 1
           done
           DISPLAY=:99 GSK_RENDERER=cairo cargo test --locked -p tcms-app installed_inventory_filters_virtualizes_and_opens_correct_package -- --ignored --test-threads=1
+      - name: Flatpak preview aborts before deployment
+        run: cargo test --locked -p tcms-flatpak preview_resolves_runtime_without_deploying -- --ignored --test-threads=1
       - name: Build
         run: cargo build -p tcms-app
 

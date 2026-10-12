@@ -12,3 +12,6 @@ async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+
+libflatpak = { version = "0.7", features = ["v1_9_1"] }
+gio = { workspace = true }

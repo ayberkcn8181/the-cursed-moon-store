@@ -6,6 +6,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 tokio::task_local! {
+    static OUTPUT_LOG: crate::history::Transcript;
     static PROGRESS: std::sync::mpsc::SyncSender<String>;
 }
 
@@ -17,13 +18,23 @@ pub async fn with_progress<T>(
     PROGRESS.scope(sender, operation).await
 }
 
+pub async fn with_progress_log<T>(
+    sender: std::sync::mpsc::SyncSender<String>,
+    log: crate::history::Transcript,
+    operation: impl std::future::Future<Output = T>,
+) -> T {
+    OUTPUT_LOG
+        .scope(log, with_progress(sender, operation))
+        .await
+}
 pub fn report_progress(message: &str) {
+    let _ = OUTPUT_LOG.try_with(|log| crate::history::append(log, message));
     let _ = PROGRESS.try_with(|sender| sender.try_send(message.to_string()));
 }
 
 async fn execute(cmd: &mut Command) -> std::io::Result<std::process::Output> {
     let Ok(sender) = PROGRESS.try_with(Clone::clone) else {
-        return cmd.output().await;
+        return cmd.kill_on_drop(true).output().await;
     };
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -79,7 +90,9 @@ async fn stream_output(
             }
         }
         if !clean.is_empty() {
-            let _ = sender.try_send(String::from_utf8_lossy(&clean).into_owned());
+            let text = String::from_utf8_lossy(&clean).into_owned();
+            let _ = OUTPUT_LOG.try_with(|log| crate::history::append(log, &text));
+            let _ = sender.try_send(text);
         }
     }
     Ok(retained)

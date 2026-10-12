@@ -25,7 +25,7 @@ Başarılı derleme ve paket kurulum testinden sonra GitHub Release oluşur:
 
 - `the-cursed-moon-store-0.1.1-1-x86_64.pkg.tar.zst`: kurulabilir uygulama.
 - `the-cursed-moon-store-0.1.1.tar.gz`: aynı commit'in kaynak kodu.
-- `PKGBUILD` ve `.SRCINFO`: kaynak arşivini SHA-256 ile doğrulayan kararlı paket tarifi.
+- `PKGBUILD` ve `SRCINFO`: kaynak arşivini SHA-256 ile doğrulayan kararlı paket tarifi.
 - `the-cursed-moon-store-git-aur.tar.gz`: geliştirme sürümünün AUR gönderim dosyaları.
 - `SHA256SUMS` ve `SOURCE_COMMIT`: dosya bütünlüğü ve kullanılan kaynak commit'i.
 
@@ -90,9 +90,10 @@ PKGBUILD metaverisi değiştiğinde `.SRCINFO` dosyasını yeniden üretin.
 
 ## AUR: kararlı sürüm
 
-GitHub sürümü yayımlandıktan sonra Release'e eklenen **PKGBUILD ve .SRCINFO**,
+GitHub sürümü yayımlandıktan sonra Release'e eklenen **PKGBUILD ve SRCINFO**,
 `the-cursed-moon-store` adlı ayrı AUR deposuna gönderilebilir. Bu tarif main'i
 takip etmez; belirtilen sürümün kaynak arşivini checksum ile doğrular.
+AUR deposunda `SRCINFO` dosyasını `.SRCINFO` adıyla kaydedin.
 Her yeni sürümde iki dosyayı birlikte güncelleyin. `.pkg.tar.zst` ikili paketlerini
 ve uygulamanın kaynak ağacını AUR Git deposuna göndermeyin.
 
