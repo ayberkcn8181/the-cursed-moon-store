@@ -8,23 +8,27 @@ Bu paket AppImage değildir ve diğer dağıtımlar için taşınabilirlik iddia
 
 1. `Cargo.toml`, çalışma alanı paketlerinin `Cargo.lock` sürümleri, yerel
    `PKGBUILD` ve AppStream metainfo sürümünü birlikte güncelleyin.
-2. Değişiklikleri main'e birleştirin. **CI** ve **Arch package and release**
-   kontrollerinin başarılı olduğunu doğrulayın. İkinci iş akışının artifact'i,
-   yayınlamadan önce indirip deneyebileceğiniz paketi içerir.
-3. Temiz ve güncel main üzerinde sürüm etiketi oluşturup gönderin:
+2. Pull request üzerindeki **CI** ve **Arch package and release** kontrollerini
+   doğrulayın, ardından değişiklikleri main'e birleştirin. Main'e gönderilen
+   commit önceki main sürümünden daha yüksek bir sürüm numarası taşıyorsa,
+   başarılı derleme ve paket kurulum testinden sonra etiketi ve GitHub Release'i
+   otomatik oluşturur. Aynı sürüm numarasıyla yapılan normal kod değişiklikleri
+   yeni bir Release oluşturmaz.
+3. Alternatif olarak, temiz ve güncel main üzerinde açık bir sürüm etiketi
+   oluşturup gönderebilirsiniz:
 
    ```bash
    git switch main && git pull --ff-only origin main &&
-   git tag -a v0.1.1 -m 'The Cursed Moon Store 0.1.1' &&
-   git push origin v0.1.1
+   git tag -a v0.1.2 -m 'The Cursed Moon Store 0.1.2' &&
+   git push origin v0.1.2
    ```
 
-`v*` etiketleri yayın iş akışını başlatır. Etiket ile Cargo/AppStream sürümleri
-uyuşmazsa yayın durur. Etiket, paketlenen commit'e işaret etmelidir.
-Başarılı derleme ve paket kurulum testinden sonra GitHub Release oluşur:
+`v*` etiketleri de yayın iş akışını başlatır. Etiket ile Cargo/AppStream
+sürümleri uyuşmazsa yayın durur. Mevcut etiket başka commit'e işaret ediyorsa
+üzerine yazılmaz. Release şu dosyaları içerir:
 
-- `the-cursed-moon-store-0.1.1-1-x86_64.pkg.tar.zst`: kurulabilir uygulama.
-- `the-cursed-moon-store-0.1.1.tar.gz`: aynı commit'in kaynak kodu.
+- `the-cursed-moon-store-0.1.2-1-x86_64.pkg.tar.zst`: kurulabilir uygulama.
+- `the-cursed-moon-store-0.1.2.tar.gz`: aynı commit'in kaynak kodu.
 - `PKGBUILD` ve `SRCINFO`: kaynak arşivini SHA-256 ile doğrulayan kararlı paket tarifi.
 - `the-cursed-moon-store-git-aur.tar.gz`: geliştirme sürümünün AUR gönderim dosyaları.
 - `SHA256SUMS` ve `SOURCE_COMMIT`: dosya bütünlüğü ve kullanılan kaynak commit'i.
@@ -39,7 +43,7 @@ yeni değişiklikler için yeni sürüm etiketi kullanın.
 ```bash
 # İndirdiğiniz paket ile SHA256SUMS aynı dizinde olmalı.
 sha256sum --check --ignore-missing SHA256SUMS &&
-sudo pacman -U ./the-cursed-moon-store-0.1.1-1-x86_64.pkg.tar.zst
+sudo pacman -U ./the-cursed-moon-store-0.1.2-1-x86_64.pkg.tar.zst
 the-cursed-moon-store --version
 ```
 

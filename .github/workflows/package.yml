@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
+    outputs:
+      release_tag: ${{ steps.release_metadata.outputs.tag }}
+      publish: ${{ steps.release_metadata.outputs.publish }}
     steps:
       - name: Install Arch build and validation tools
         run: |
@@ -31,6 +34,11 @@ jobs:
           persist-credentials: false
       - name: Test release preparation
         run: python scripts/test_prepare_release.py
+      - name: Determine release intent
+        id: release_metadata
+        env:
+          TCMS_BEFORE: ${{ github.event.before }}
+        run: python scripts/release-metadata.py >> "$GITHUB_OUTPUT"
       - name: Create unprivileged package builder
         run: |
           useradd --create-home builder
@@ -66,12 +74,16 @@ jobs:
             dist/SOURCE_COMMIT
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: needs.package.outputs.publish == 'true'
     needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
           name: arch-package-${{ github.sha }}
@@ -83,10 +95,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TCMS_RELEASE_TAG: ${{ github.ref_name }}
+          TCMS_RELEASE_TAG: ${{ needs.package.outputs.release_tag }}
         run: |
+          test "$(cat dist/SOURCE_COMMIT)" = "$GITHUB_SHA"
+          if tcms_existing=$(git rev-parse -q --verify "refs/tags/${TCMS_RELEASE_TAG}^{commit}"); then
+            test "$tcms_existing" = "$GITHUB_SHA" || { echo 'Release tag belongs to a different commit'; exit 1; }
+          fi
+          if gh release view "$TCMS_RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; assets will not be overwritten.'
+            exit 0
+          fi
           gh release create "$TCMS_RELEASE_TAG" \
-            --verify-tag --title "The Cursed Moon Store $TCMS_RELEASE_TAG" \
+            --target "$GITHUB_SHA" --title "The Cursed Moon Store $TCMS_RELEASE_TAG" \
             --generate-notes \
             dist/*.pkg.tar.zst dist/*.tar.gz dist/PKGBUILD dist/SRCINFO \
             dist/SHA256SUMS dist/SOURCE_COMMIT

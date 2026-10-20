@@ -14,6 +14,24 @@ import unittest
 spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("prepare-release.py"))
 release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
+metadata_spec = importlib.util.spec_from_file_location("metadata", Path(__file__).with_name("release-metadata.py"))
+metadata = importlib.util.module_from_spec(metadata_spec)
+metadata_spec.loader.exec_module(metadata)
+
+
+class ReleaseIntentTests(unittest.TestCase):
+    def test_only_increasing_main_version_publishes(self):
+        self.assertTrue(metadata.should_publish("push", "refs/heads/main", "a" * 40, "0.1.2", "0.1.1"))
+        for previous in ("0.1.2", "0.2.0"):
+            self.assertFalse(metadata.should_publish("push", "refs/heads/main", "a" * 40, "0.1.2", previous))
+        self.assertFalse(metadata.should_publish("pull_request", "refs/heads/main", "a" * 40, "0.1.2", "0.1.1"))
+        self.assertFalse(metadata.should_publish("push", "refs/heads/topic", "a" * 40, "0.1.2", "0.1.1"))
+        self.assertFalse(metadata.should_publish("push", "refs/heads/main", "0" * 40, "0.1.2"))
+
+    def test_explicit_tag_must_match_version(self):
+        self.assertTrue(metadata.should_publish("push", "refs/tags/v0.1.2", "", "0.1.2"))
+        with self.assertRaises(ValueError):
+            metadata.should_publish("push", "refs/tags/v0.1.1", "", "0.1.2")
 
 
 class ReleaseTests(unittest.TestCase):

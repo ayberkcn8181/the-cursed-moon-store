@@ -51,6 +51,13 @@
     <keyword>aur</keyword>
   </keywords>
   <releases>
+    <release version="0.1.2" date="2026-10-20">
+      <description>
+        <p>Dependency and size previews, complete search results, persistent
+        transaction history, improved installed-package classification,
+        user and system Flatpak updates, and reliable settings persistence.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-09-28">
       <description>
         <p>Complete installed package inventory, reliable package transactions,
