@@ -100,6 +100,32 @@ impl StoreService {
         self.runtime.clone()
     }
 
+    pub fn diagnostics_async(&self, done: impl FnOnce(String) + 'static) {
+        let store = self.clone();
+        let (tx, rx) = mpsc::channel();
+        if !spawn_named("tcms-diagnostics", move || {
+            let config = store.config();
+            let mut report = store.runtime.block_on(tcms_core::diagnostics::collect(
+                env!("CARGO_PKG_VERSION"),
+                &config,
+            ));
+            for record in store
+                .history
+                .snapshot()
+                .into_iter()
+                .filter(|r| r.status == tcms_core::history::Status::Failed)
+                .take(3)
+            {
+                report.push_str(&format!("\n{}\n{}\n", record.title, record.output));
+            }
+            let _ = tx.send(tcms_core::diagnostics::redact_local(&report));
+        }) {
+            done(tcms_core::t("diagnostics.failed"));
+            return;
+        }
+        poll_local(rx, tcms_core::t("diagnostics.failed"), done);
+    }
+
     fn with_inner<R>(&self, f: impl FnOnce(&StoreInner) -> R) -> R {
         let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         f(&guard)
@@ -1411,7 +1437,11 @@ impl UiBridge {
                 return;
             }
             match result {
-                Err(e) => dialog.set_body(&format!("{}\n\n{e}", t("preview.failed"))),
+                Err(e) => dialog.set_body(&format!(
+                    "{}\n\n{}\n\n{e}",
+                    t("preview.failed"),
+                    tcms_core::diagnostics::explanation(&e.to_string())
+                )),
                 Ok(p) => {
                     let size = p
                         .download_bytes()
@@ -1512,6 +1542,7 @@ impl UiBridge {
                     }
                     Err(err) => {
                         (bridge.reload)();
+                        crate::diagnostics::present_error(&bridge.window, &err.to_string());
                         bridge.toast_msg(&t_args(
                             "toast.failed",
                             &[("name", &name), ("error", &err.to_string())],

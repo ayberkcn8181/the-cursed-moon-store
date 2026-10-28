@@ -467,6 +467,18 @@ pub fn append_listing_errors(host: &GtkBox, errors: &[String]) {
         .css_classes(["error"])
         .build();
     host.append(&label);
+    let details = gtk4::Button::with_label(&tcms_core::t("diagnostics.title"));
+    details.set_halign(gtk4::Align::Start);
+    let errors = errors.join("\n\n");
+    details.connect_clicked(move |button| {
+        if let Some(window) = button
+            .root()
+            .and_then(|r| r.downcast::<gtk4::Window>().ok())
+        {
+            crate::diagnostics::present_error(&window, &errors);
+        }
+    });
+    host.append(&details);
 }
 
 #[cfg(test)]

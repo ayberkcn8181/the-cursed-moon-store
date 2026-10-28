@@ -134,6 +134,18 @@ fn show_output(window: &gtk4::Window, queue: &Arc<TransactionQueue>, record: &Re
             .set_text(&buf.text(&buf.start_iter(), &buf.end_iter(), true))
     });
     host.append(&copy);
+    let diagnose = gtk4::Button::with_label(&t("diagnostics.title"));
+    let buf = buffer.clone();
+    let weak = window.downgrade();
+    diagnose.connect_clicked(move |_| {
+        if let Some(window) = weak.upgrade() {
+            crate::diagnostics::present_error(
+                &window,
+                &buf.text(&buf.start_iter(), &buf.end_iter(), true),
+            );
+        }
+    });
+    host.append(&diagnose);
     dialog.set_extra_child(Some(&host));
     let active = Rc::new(Cell::new(true));
     let close = active.clone();

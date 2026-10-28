@@ -17,3 +17,4 @@ dirs = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 reqwest = { workspace = true }
+regex = { workspace = true }

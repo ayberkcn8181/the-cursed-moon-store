@@ -216,6 +216,18 @@ impl StoreWindow {
             }
         });
         header.pack_end(&history_button);
+        let diagnostics = gtk4::Button::builder()
+            .icon_name("dialog-information-symbolic")
+            .tooltip_text(t("diagnostics.title"))
+            .build();
+        let diagnostic_store = store.clone();
+        let diagnostic_window = window_gtk.downgrade();
+        diagnostics.connect_clicked(move |_| {
+            if let Some(window) = diagnostic_window.upgrade() {
+                crate::diagnostics::present(&window, &diagnostic_store);
+            }
+        });
+        header.pack_end(&diagnostics);
 
         let refresh = gtk4::Button::builder()
             .icon_name("view-refresh-symbolic")

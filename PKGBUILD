@@ -7,9 +7,9 @@ arch=('x86_64')
 url="https://github.com/ayberkcn8181/the-cursed-moon-store"
 license=('GPL-3.0-or-later')
 depends=('gtk4>=4.14' 'libadwaita>=1.6' 'glib2' 'glibc' 'gcc-libs' 'cairo'
-         'gdk-pixbuf2' 'pango' 'graphene' 'xz' 'pacman' 'pacman-contrib' 'flatpak' 'polkit')
+         'gdk-pixbuf2' 'pango' 'graphene' 'xz' 'pacman' 'pacman-contrib' 'flatpak' 'polkit' 'util-linux')
 makedepends=('cargo' 'git')
-optdepends=('paru: AUR helper' 'yay: AUR helper')
+optdepends=('paru: AUR helper' 'yay: AUR helper' 'konsole: interactive AUR review' 'xterm: interactive AUR review')
 options=('!lto' '!debug')
 # Local development only; the AUR recipe is in packaging/aur/.
 source=("$pkgname::git+file://$PWD")

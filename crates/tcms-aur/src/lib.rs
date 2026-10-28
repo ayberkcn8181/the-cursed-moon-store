@@ -1,4 +1,5 @@
 //! AUR backend via RPC search and paru/yay/pacman for transactions.
+mod review;
 
 use std::collections::HashMap;
 
@@ -586,6 +587,7 @@ impl Backend for AurBackend {
         }
         if !preview.entries.is_empty() {
             preview.notes.push(tcms_core::t("preview.aur_estimate"));
+            preview.notes.push(tcms_core::t("aur.review_terminal"));
         }
         Ok(preview)
     }
@@ -596,52 +598,17 @@ impl Backend for AurBackend {
         }
         tcms_core::assert_safe_package_id(id)?;
         let helper = self.resolve_helper().await?;
-        let helper_name = std::path::Path::new(&helper)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(helper.as_str());
-
-        // GUI installs have no TTY: skip interactive PKGBUILD review and route
-        // privilege escalation through pkexec so Polkit can prompt.
-        let mut args = vec![
-            "-S".to_string(),
-            "--noconfirm".to_string(),
-            "--needed".to_string(),
-        ];
-        if helper_name == "paru" || helper_name.ends_with("paru") {
-            args.push("--skipreview".into());
-        }
-        if let Some(pkexec) = tcms_core::process::pkexec_path() {
-            args.push("--sudo".into());
-            args.push(pkexec.to_string_lossy().into_owned());
-        }
-        args.extend(self.extra_arg_list());
-        args.push(id.id.clone());
-        let str_args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let out = run(&helper, &str_args).await?;
-        out.ensure_success(&format!("{helper_name} install {}", id.id))?;
-        Ok(())
+        let args = review::arguments(&helper, &self.extra_arg_list(), Some(&id.id))?;
+        tcms_core::terminal::run_review(&helper, &args).await
     }
-
     async fn update(&self, id: &PackageId) -> Result<()> {
         self.install(id).await
     }
-
     async fn update_all(&self) -> Result<()> {
         self.ensure_enabled()?;
         let helper = self.resolve_helper().await?;
-        let mut args = vec!["-Sua".to_string(), "--noconfirm".to_string()];
-        if std::path::Path::new(&helper)
-            .file_name()
-            .is_some_and(|name| name == "paru")
-        {
-            args.push("--skipreview".into());
-        }
-        if let Some(pkexec) = tcms_core::process::pkexec_path() {
-            args.extend(["--sudo".into(), pkexec.to_string_lossy().into_owned()]);
-        }
-        args.extend(self.extra_arg_list());
-        run(&helper, &args).await?.ensure_success("AUR upgrade")
+        let args = review::arguments(&helper, &self.extra_arg_list(), None)?;
+        tcms_core::terminal::run_review(&helper, &args).await
     }
 
     async fn remove(&self, id: &PackageId) -> Result<()> {

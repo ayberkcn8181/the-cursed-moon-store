@@ -1,3 +1,4 @@
+mod diagnostics;
 mod icon_loader;
 mod pages;
 mod store;
