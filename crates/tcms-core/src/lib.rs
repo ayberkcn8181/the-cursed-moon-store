@@ -38,4 +38,9 @@ pub mod preview;
 pub use preview::{PreviewEntry, TransactionPreview};
 pub mod atomic_file;
 pub mod catalog;
+pub mod diagnostics;
 pub mod history;
+pub mod terminal;
+
+pub mod inventory;
+pub mod screenshots;

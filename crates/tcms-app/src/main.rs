@@ -1,4 +1,6 @@
+mod diagnostics;
 mod icon_loader;
+mod management;
 mod pages;
 mod store;
 mod transaction_center;

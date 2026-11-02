@@ -139,17 +139,43 @@ impl StoreWindow {
         let compatibility = Rc::new(CompatibilityPage::new(bridge.clone()));
         let settings = SettingsPage::new(store.clone());
 
-        // Ctrl+F focuses Explore search.
+        // Keyboard navigation follows the active page.
         {
             let explore_focus = explore.clone();
+            let installed_focus = installed.clone();
+            let nav_keys = navigation.clone();
             let view_stack_f = view_stack.clone();
             let controller = gtk4::EventControllerKey::new();
             controller.connect_key_pressed(move |_, key, _, modifier| {
                 use gtk4::gdk::{Key, ModifierType};
                 if modifier.contains(ModifierType::CONTROL_MASK) && (key == Key::f || key == Key::F)
                 {
-                    view_stack_f.set_visible_child_name("explore");
-                    explore_focus.focus_search();
+                    nav_keys.pop_to_tag("store-home");
+                    if view_stack_f.visible_child_name().as_deref() == Some("installed") {
+                        installed_focus.focus_search();
+                    } else {
+                        view_stack_f.set_visible_child_name("explore");
+                        explore_focus.focus_search();
+                    }
+                    return glib::Propagation::Stop;
+                }
+                if modifier.contains(ModifierType::CONTROL_MASK) {
+                    let target = match key {
+                        Key::_1 => Some("explore"),
+                        Key::_2 => Some("installed"),
+                        Key::_3 => Some("updates"),
+                        Key::_4 => Some("compatibility"),
+                        Key::_5 => Some("settings"),
+                        _ => None,
+                    };
+                    if let Some(target) = target {
+                        nav_keys.pop_to_tag("store-home");
+                        view_stack_f.set_visible_child_name(target);
+                        return glib::Propagation::Stop;
+                    }
+                }
+                if modifier.contains(ModifierType::ALT_MASK) && key == Key::Left {
+                    nav_keys.pop();
                     return glib::Propagation::Stop;
                 }
                 glib::Propagation::Proceed
@@ -216,6 +242,23 @@ impl StoreWindow {
             }
         });
         header.pack_end(&history_button);
+        let diagnostics = gtk4::Button::builder()
+            .icon_name("dialog-information-symbolic")
+            .tooltip_text(t("diagnostics.title"))
+            .build();
+        let diagnostic_store = store.clone();
+        let diagnostic_window = window_gtk.downgrade();
+        diagnostics.connect_clicked(move |_| {
+            if let Some(window) = diagnostic_window.upgrade() {
+                crate::diagnostics::present(&window, &diagnostic_store);
+            }
+        });
+        header.pack_end(&diagnostics);
+        let maintenance = gio::SimpleAction::new("maintenance", None);
+        let maintenance_bridge = bridge.clone();
+        maintenance.connect_activate(move |_, _| crate::management::present(&maintenance_bridge));
+        window.add_action(&maintenance);
+        menu.append(Some(&t("maintenance.title")), Some("win.maintenance"));
 
         let refresh = gtk4::Button::builder()
             .icon_name("view-refresh-symbolic")
@@ -262,6 +305,7 @@ impl StoreWindow {
         toolbar.add_bottom_bar(&bottom_switcher);
 
         let root_page = libadwaita::NavigationPage::builder()
+            .tag("store-home")
             .title(t("app.name"))
             .child(&toolbar)
             .build();
@@ -275,11 +319,7 @@ impl StoreWindow {
         let bp = libadwaita::Breakpoint::new(
             libadwaita::BreakpointCondition::parse("max-width: 700px").expect("breakpoint"),
         );
-        bp.add_setter(
-            &switcher_breakpoint,
-            "policy",
-            Some(&libadwaita::ViewSwitcherPolicy::Narrow.to_value()),
-        );
+        bp.add_setter(&switcher_breakpoint, "visible", Some(&false.to_value()));
         bp.connect_apply(move |_| {
             bottom_breakpoint.set_reveal(true);
         });

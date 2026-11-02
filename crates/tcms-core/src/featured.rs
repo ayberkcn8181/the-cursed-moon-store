@@ -43,8 +43,67 @@ struct FlathubApp {
     is_free_license: Option<bool>,
     #[serde(default)]
     urls: FlathubUrls,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    screenshots: Vec<FlathubScreenshot>,
+    #[serde(default)]
+    releases: Vec<FlathubRelease>,
 }
 
+#[derive(Debug, Deserialize)]
+struct FlathubScreenshot {
+    #[serde(default)]
+    sizes: Vec<FlathubImage>,
+    caption: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+struct FlathubImage {
+    src: String,
+    width: String,
+}
+#[derive(Debug, Deserialize)]
+struct FlathubRelease {
+    version: String,
+    date: Option<String>,
+    description: Option<String>,
+    url: Option<String>,
+}
+fn screenshots(items: Vec<FlathubScreenshot>) -> Vec<crate::package::Screenshot> {
+    items
+        .into_iter()
+        .take(5)
+        .filter_map(|item| {
+            let image = item
+                .sizes
+                .into_iter()
+                .filter(|s| crate::screenshots::allowed_url(&s.src))
+                .filter_map(|s| Some((s.width.parse::<u32>().ok()?, s)))
+                .filter(|(w, _)| (600..=1600).contains(w))
+                .min_by_key(|(w, _)| w.abs_diff(1248))?
+                .1;
+            Some(crate::package::Screenshot {
+                url: image.src,
+                caption: item.caption,
+            })
+        })
+        .collect()
+}
+fn releases(items: Vec<FlathubRelease>) -> Vec<crate::package::ReleaseNote> {
+    items
+        .into_iter()
+        .take(5)
+        .map(|item| {
+            let description = item.description.unwrap_or_default();
+            crate::package::ReleaseNote {
+                version: item.version,
+                date: item.date,
+                description: crate::package::strip_simple_html(&description).unwrap_or(description),
+                url: item.url.filter(|u| u.starts_with("https://")),
+            }
+        })
+        .collect()
+}
 #[derive(Debug, Default, Deserialize)]
 struct FlathubUrls {
     homepage: Option<String>,
@@ -132,6 +191,9 @@ pub async fn fetch_flathub_collection(
             state: InstallState::Available,
             installed_elsewhere: false,
             foreign_status: None,
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: vec!["Flatpak".into()],
         };
         pkg.apply_license_heuristics();
@@ -203,7 +265,10 @@ pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
         state: InstallState::Available,
         installed_elsewhere: false,
         foreign_status: None,
-        categories: vec!["Flatpak".into()],
+        explicitly_installed: None,
+        screenshots: screenshots(body.screenshots),
+        releases: releases(body.releases),
+        categories: body.categories,
     };
     pkg.apply_license_heuristics();
     Ok(pkg)
@@ -212,7 +277,6 @@ pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
 #[derive(Debug, Deserialize)]
 struct FlathubSummary {
     installed_size: Option<u64>,
-    download_size: Option<u64>,
 }
 
 async fn fetch_flathub_installed_size(app_id: &str) -> crate::Result<Option<u64>> {
@@ -230,5 +294,22 @@ async fn fetch_flathub_installed_size(app_id: &str) -> crate::Result<Option<u64>
         .json()
         .await
         .map_err(|e| crate::Error::Message(format!("Flathub summary parse failed: {e}")))?;
-    Ok(body.installed_size.or(body.download_size))
+    Ok(body.installed_size)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn appstream_details_keep_categories_and_select_cdn_images() {
+        let body:FlathubApp=serde_json::from_str(r#"{"id":"org.example.App","categories":["Utility"],"screenshots":[{"caption":"A & B","sizes":[{"width":"112","src":"https://dl.flathub.org/media/app/thumb.png"},{"width":"1248","src":"https://untrusted.example/image.png"},{"width":"752","src":"https://dl.flathub.org/media/app/large.png"}]}],"releases":[{"version":"2","description":"<p>Fix &amp; improve</p>","url":"file:///tmp/not-a-link"}]}"#).unwrap();
+        assert_eq!(body.categories, ["Utility"]);
+        let images = screenshots(body.screenshots);
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].url, "https://dl.flathub.org/media/app/large.png");
+        let notes = releases(body.releases);
+        assert_eq!(notes[0].description, "Fix & improve");
+        assert!(notes[0].url.is_none());
+        let minimal: FlathubApp = serde_json::from_str("{}").unwrap();
+        assert!(minimal.screenshots.is_empty() && minimal.releases.is_empty());
+    }
 }

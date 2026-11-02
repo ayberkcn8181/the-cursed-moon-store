@@ -221,6 +221,14 @@ impl AppConfig {
                 return Err(Error::Config("nested raw_overlay is not allowed".into()));
             }
         }
+        // Migrate older noninteractive AUR settings without discarding other preferences.
+        self.advanced.aur_extra_args = self
+            .advanced
+            .aur_extra_args
+            .split_whitespace()
+            .filter(|a| *a != "--noconfirm")
+            .collect::<Vec<_>>()
+            .join(" ");
         self.validate()?;
         Ok(self)
     }
@@ -304,6 +312,19 @@ fn merge_overlay(base: &mut toml::Value, patch: toml::Value, prefix: &str) -> Re
 mod tests {
     use super::*;
     use crate::package::{InstallState, Package, PackageId, PackageSource};
+    #[test]
+    fn legacy_aur_confirmation_flags_preserve_other_settings() {
+        let mut c = AppConfig {
+            enable_pacman: false,
+            ..Default::default()
+        };
+        c.advanced.aur_extra_args = "--noconfirm --needed".into();
+        c.advanced.pacman_extra_args = "--noconfirm".into();
+        let m = c.resolved().unwrap();
+        assert!(!m.enable_pacman);
+        assert_eq!(m.advanced.aur_extra_args, "--needed");
+        assert_eq!(m.advanced.pacman_extra_args, "--noconfirm");
+    }
 
     #[test]
     fn overlays_apply_once_and_unknown_keys_are_rejected() {
@@ -385,6 +406,9 @@ mod tests {
             state: InstallState::Available,
             installed_elsewhere: false,
             foreign_status: None,
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: vec!["Codec".into()],
         };
         assert!(cfg.allows_package(&app));

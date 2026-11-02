@@ -83,6 +83,28 @@ fn resolve_installation(
                     TransactionOperationType::Update => PackageAction::Update,
                     _ => PackageAction::Install,
                 };
+                if action == PackageAction::Update && parts[0] == "app" {
+                    match (op.old_metadata(), op.metadata()) {
+                        (Some(old), Some(new)) => {
+                            let changes = crate::permissions::manifest_changes(
+                                &old.to_data(),
+                                &new.to_data(),
+                            );
+                            if !changes.is_empty() {
+                                p.notes.push(format!(
+                                    "{}: {reference}\n{}\n{}",
+                                    tcms_core::t("permissions.update_changes"),
+                                    changes.join("\n"),
+                                    tcms_core::t("permissions.manifest_hint")
+                                ));
+                            }
+                        }
+                        _ => p.notes.push(format!(
+                            "{reference}: {}",
+                            tcms_core::t("permissions.diff_unknown")
+                        )),
+                    }
+                }
                 let new_size = if action == PackageAction::Remove {
                     0
                 } else {

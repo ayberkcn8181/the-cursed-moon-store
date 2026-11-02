@@ -1,7 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Orientation, Spinner};
 
-use tcms_core::i18n::{t, t_args};
+use tcms_core::i18n::t;
 
 use crate::store::{ListKind, UiBridge};
 use crate::widgets::{installed_package_list, page_shell};
@@ -10,6 +10,8 @@ pub struct InstalledPage {
     pub root: GtkBox,
     list_host: GtkBox,
     bridge: UiBridge,
+    filter: std::rc::Rc<std::cell::RefCell<tcms_core::inventory::Filter>>,
+    largest_first: std::rc::Rc<std::cell::Cell<bool>>,
     request_id: std::rc::Rc<std::cell::Cell<u64>>,
 }
 
@@ -23,12 +25,31 @@ impl InstalledPage {
             root,
             list_host,
             bridge,
+            filter: Default::default(),
+            largest_first: Default::default(),
             request_id: Default::default(),
         };
         page.reload();
         page
     }
 
+    pub fn focus_search(&self) {
+        fn focus(widget: &gtk4::Widget) -> bool {
+            if let Some(search) = widget.downcast_ref::<gtk4::SearchEntry>() {
+                search.grab_focus();
+                return true;
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if focus(&widget) {
+                    return true;
+                }
+                child = widget.next_sibling();
+            }
+            false
+        }
+        focus(self.list_host.upcast_ref());
+    }
     pub fn reload(&self) {
         while let Some(child) = self.list_host.first_child() {
             self.list_host.remove(&child);
@@ -42,6 +63,8 @@ impl InstalledPage {
 
         let list_host = self.list_host.clone();
         let bridge = self.bridge.clone();
+        let filter = self.filter.clone();
+        let largest = self.largest_first.clone();
         let request_id = self.request_id.clone();
         let id = request_id.get() + 1;
         request_id.set(id);
@@ -68,16 +91,7 @@ impl InstalledPage {
                         .build();
                     list_host.append(&empty);
                 } else {
-                    let label = gtk4::Label::builder()
-                        .label(t_args(
-                            "installed.count",
-                            &[("n", &packages.len().to_string())],
-                        ))
-                        .halign(gtk4::Align::Start)
-                        .css_classes(["dim-label"])
-                        .build();
-                    list_host.append(&label);
-                    list_host.append(&installed_package_list(&packages, &bridge));
+                    list_host.append(&installed_package_list(&packages, &bridge, filter, largest));
                 }
             });
     }
