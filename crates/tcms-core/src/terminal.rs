@@ -87,9 +87,7 @@ pub async fn run_review(program: &str, args: &[String]) -> Result<()> {
             "AUR review/build exited with status {code}"
         ))),
         None => {
-            if let Ok(out) = terminal_result {
-                out.ensure_success("AUR terminal")?;
-            }
+            terminal_result?.ensure_success("AUR terminal")?;
             Err(Error::Message(crate::t("aur.review_interrupted")))
         }
     }
@@ -121,7 +119,7 @@ mod tests {
             .args(["-c", &cmd])
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(7));
+        assert_eq!(out.status.code(), Some(7), "{}", String::from_utf8_lossy(&out.stderr));
         assert_eq!(
             std::fs::read_to_string(stage.0.join("status"))
                 .unwrap()

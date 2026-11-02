@@ -276,6 +276,7 @@ impl StoreService {
             .unwrap_or_else(|| pkg.clone());
 
         detailed.foreign_status = pkg.foreign_status;
+        detailed.explicitly_installed = detailed.explicitly_installed.or(pkg.explicitly_installed);
         // Keep the list entry's nicer display name / icon when backends return stubs.
         if !pkg.name.is_empty()
             && pkg.name != detailed.id.id

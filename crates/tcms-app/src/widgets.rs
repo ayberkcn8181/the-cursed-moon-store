@@ -1,9 +1,9 @@
-use std::path::Path;
+use std::{path::Path, rc::Rc};
 
 use gtk4::prelude::*;
 use gtk4::{Box as GtkBox, Label, ListBox, ListBoxRow, Orientation, PolicyType, ScrolledWindow};
 use libadwaita::prelude::*;
-use tcms_core::i18n::t;
+use tcms_core::i18n::{t,t_args};
 use tcms_core::icons::is_remote_icon;
 use tcms_core::{InstallState, Package, PackageAction};
 
@@ -220,7 +220,7 @@ pub fn paged_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
     root
 }
 
-pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox {
+pub fn installed_package_list(packages: &[Package], bridge: &UiBridge, state: Rc<std::cell::RefCell<tcms_core::inventory::Filter>>, largest: Rc<std::cell::Cell<bool>>) -> GtkBox {
     let content = GtkBox::new(Orientation::Vertical, 8);
     let search = gtk4::SearchEntry::builder()
         .placeholder_text(t("installed.search"))
@@ -231,23 +231,42 @@ pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox
     for package in packages {
         model.append(&glib::BoxedAnyObject::new(package.clone()));
     }
-    let query = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
-    let query_filter = query.clone();
+    search.set_text(&state.borrow().query);
+    let filter_state = state.clone();
     let filter = gtk4::CustomFilter::new(move |object| {
-        let package = object
-            .downcast_ref::<glib::BoxedAnyObject>()
-            .unwrap()
-            .borrow::<Package>();
-        let query = query_filter.borrow();
-        package.name.to_lowercase().contains(query.as_str())
-            || package.id.id.to_lowercase().contains(query.as_str())
-            || package.summary.to_lowercase().contains(query.as_str())
+        let p = object.downcast_ref::<glib::BoxedAnyObject>().unwrap().borrow::<Package>(); filter_state.borrow().matches(&p)
     });
     let filtered = gtk4::FilterListModel::new(Some(model), Some(filter.clone()));
-    search.connect_search_changed(move |search| {
-        *query.borrow_mut() = search.text().trim().to_lowercase();
-        filter.changed(gtk4::FilterChange::Different);
+    let search_state = state.clone(); let search_filter = filter.clone();
+    search.connect_search_changed(move |s| { search_state.borrow_mut().query = s.text().trim().to_lowercase(); search_filter.changed(gtk4::FilterChange::Different); });
+    let controls = gtk4::FlowBox::builder().selection_mode(gtk4::SelectionMode::None).homogeneous(true).max_children_per_line(4).min_children_per_line(1).row_spacing(8).column_spacing(8).build();
+    for (field, title, keys) in [
+        (0, "inventory.kind", vec!["inventory.all", "inventory.apps", "inventory.explicit", "inventory.dependencies", "inventory.reason_unknown"]),
+        (1, "inventory.source", vec!["inventory.all_sources", "source.pacman", "source.aur", "source.local", "source.unverified", "inventory.flatpak_user", "inventory.flatpak_system"]),
+        (2, "inventory.size", vec!["inventory.any_size", "inventory.100m", "inventory.1g", "inventory.size_unknown"]),
+    ] {
+        let labels: Vec<_> = keys.into_iter().map(t).collect(); let refs: Vec<_> = labels.iter().map(String::as_str).collect();
+        let dropdown = gtk4::DropDown::from_strings(&refs); dropdown.set_tooltip_text(Some(&t(title))); dropdown.update_property(&[gtk4::accessible::Property::Label(&t(title))]);
+        dropdown.set_selected(match field { 0 => state.borrow().kind, 1 => state.borrow().source, _ => state.borrow().size });
+        let state = state.clone(); let filter = filter.clone();
+        dropdown.connect_selected_notify(move |d| {
+            let mut state = state.borrow_mut(); match field { 0 => state.kind = d.selected(), 1 => state.source = d.selected(), _ => state.size = d.selected() }
+            drop(state); filter.changed(gtk4::FilterChange::Different);
+        }); controls.insert(&dropdown, -1);
+    }
+    let sort_state = largest.clone();
+    let sorter = gtk4::CustomSorter::new(move |a, b| {
+        let a = a.downcast_ref::<glib::BoxedAnyObject>().unwrap().borrow::<Package>(); let b = b.downcast_ref::<glib::BoxedAnyObject>().unwrap().borrow::<Package>();
+        match tcms_core::inventory::compare(&a, &b, sort_state.get()) { std::cmp::Ordering::Less => gtk4::Ordering::Smaller, std::cmp::Ordering::Equal => gtk4::Ordering::Equal, std::cmp::Ordering::Greater => gtk4::Ordering::Larger }
     });
+    let sorted = gtk4::SortListModel::new(Some(filtered.clone()), Some(sorter.clone()));
+    let order = gtk4::DropDown::from_strings(&[&t("inventory.name_order"), &t("inventory.size_order")]); order.set_selected(u32::from(largest.get()));
+    order.set_tooltip_text(Some(&t("inventory.order"))); order.update_property(&[gtk4::accessible::Property::Label(&t("inventory.order"))]);
+    order.connect_selected_notify(move |d| { largest.set(d.selected() == 1); sorter.changed(gtk4::SorterChange::Different); }); controls.insert(&order, -1); content.append(&controls);
+    let count = Label::builder().xalign(0.0).css_classes(["dim-label"]).build(); let total = packages.len().to_string();
+    count.set_label(&t_args("inventory.count", &[("shown", &filtered.n_items().to_string()), ("total", &total)])); let count_weak = count.downgrade();
+    filtered.connect_items_changed(move |model, _, _, _| { if let Some(count) = count_weak.upgrade() { count.set_label(&t_args("inventory.count", &[("shown", &model.n_items().to_string()), ("total", &total)])); } }); content.append(&count);
+    content.append(&Label::builder().label(t("inventory.reason_hint")).xalign(0.0).wrap(true).css_classes(["caption", "dim-label"]).build());
     let factory = gtk4::SignalListItemFactory::new();
     let bridge = bridge.clone();
     factory.connect_bind(move |_, object| {
@@ -272,7 +291,7 @@ pub fn installed_package_list(packages: &[Package], bridge: &UiBridge) -> GtkBox
             .unwrap()
             .set_child(gtk4::Widget::NONE);
     });
-    let list = gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(filtered))), Some(factory));
+    let list = gtk4::ListView::new(Some(gtk4::NoSelection::new(Some(sorted))), Some(factory));
     list.add_css_class("boxed-list");
     content.append(
         &ScrolledWindow::builder()
@@ -543,17 +562,17 @@ mod tests {
         let packages: Vec<_> = (0..2000)
             .map(|index| {
                 let id = format!("package-{index:05}");
-                Package::stub(
+                let mut package = Package::stub(
                     tcms_core::PackageSource::Pacman,
                     &id,
                     &id,
                     "",
                     "1",
                     InstallState::Installed,
-                )
+                ); package.explicitly_installed = Some(index % 2 == 0); package.size_bytes = Some(index * 1024 * 1024); package
             })
             .collect();
-        let content = installed_package_list(&packages, &bridge);
+        let content = installed_package_list(&packages, &bridge, Default::default(), Default::default());
         let search = content
             .first_child()
             .unwrap()
@@ -591,6 +610,13 @@ mod tests {
         search.set_text("");
         search.emit_by_name::<()>("search-changed", &[]);
         assert_eq!(list.model().unwrap().n_items(), 2000);
+        let controls = descendants::<gtk4::DropDown>(content.upcast_ref()); assert_eq!(controls.len(), 4);
+        controls[0].set_selected(3); assert_eq!(list.model().unwrap().n_items(), 1000);
+        controls[2].set_selected(2); assert_eq!(list.model().unwrap().n_items(), 488);
+        controls[3].set_selected(1);
+        let first = list.model().unwrap().item(0).unwrap().downcast::<glib::BoxedAnyObject>().unwrap(); assert_eq!(first.borrow::<Package>().id.id, "package-01999");
+        controls[0].set_selected(0); controls[2].set_selected(0); assert_eq!(list.model().unwrap().n_items(), 2000);
+        window.set_default_size(420, 740); spin_until(|| content.width() <= 420); assert!(content.measure(gtk4::Orientation::Horizontal, -1).0 <= 420);
         let catalog = package_list(&packages, &bridge);
         window.set_child(Some(&catalog));
         spin_until(|| !descendants::<libadwaita::ActionRow>(catalog.upcast_ref()).is_empty());

@@ -15,7 +15,7 @@ jobs:
       - name: Install system deps
         run: |
           dnf -y install \
-            gcc gcc-c++ clang make git curl util-linux \
+            gcc gcc-c++ clang make git curl util-linux util-linux-script \
             pkgconf-pkg-config \
             gtk4-devel libadwaita-devel flatpak-devel flatpak \
             openssl-devel xz-devel xorg-x11-server-Xvfb
@@ -49,7 +49,7 @@ jobs:
       image: archlinux:base-devel
     steps:
       - name: Install Arch build tools
-        run: pacman -Syu --noconfirm --needed rust git
+        run: pacman -Syu --noconfirm --needed rust git pacman-contrib
       - uses: actions/checkout@v4
       - name: Real pacman fixture in isolated root
         env:

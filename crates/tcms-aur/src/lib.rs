@@ -328,6 +328,9 @@ impl AurBackend {
             state,
             installed_elsewhere: false,
             foreign_status: Some(tcms_core::ForeignStatus::InAur),
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: vec!["AUR".into()],
         };
         pkg.apply_license_heuristics();

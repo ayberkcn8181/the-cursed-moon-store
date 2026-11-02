@@ -41,3 +41,5 @@ pub mod catalog;
 pub mod diagnostics;
 pub mod history;
 pub mod terminal;
+
+pub mod inventory;

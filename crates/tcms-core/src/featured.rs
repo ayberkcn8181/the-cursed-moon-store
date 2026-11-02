@@ -132,6 +132,9 @@ pub async fn fetch_flathub_collection(
             state: InstallState::Available,
             installed_elsewhere: false,
             foreign_status: None,
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: vec!["Flatpak".into()],
         };
         pkg.apply_license_heuristics();
@@ -203,6 +206,9 @@ pub async fn fetch_flathub_app(app_id: &str) -> crate::Result<Package> {
         state: InstallState::Available,
         installed_elsewhere: false,
         foreign_status: None,
+        explicitly_installed: None,
+        screenshots: Vec::new(),
+        releases: Vec::new(),
         categories: vec!["Flatpak".into()],
     };
     pkg.apply_license_heuristics();

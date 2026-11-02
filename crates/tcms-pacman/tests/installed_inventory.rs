@@ -26,6 +26,9 @@ case "$1" in
     echo 'local database unavailable' >&2; exit 42
   fi
   cat "$TCMS_INVENTORY_FIXTURE/inventory";;
+-Qi)
+  if [ -f "$TCMS_INVENTORY_FIXTURE/fail-info" ]; then exit 9; fi
+  printf 'Name : package-00000\nInstalled Size : 1.00 GiB\nInstall Reason : Explicitly installed\n\nName : package-00001\nInstalled Size : 2.00 MiB\nInstall Reason : Installed as a dependency for another package\n';;
 -Qu) exit 1;;
 -Qo) echo 'desktop ownership lookup failed' >&2; exit 2;;
 *) exit 9;;
@@ -47,6 +50,8 @@ esac
     let backend =
         tcms_pacman::PacmanBackend::new(true, root.join("pacman.conf").to_str().unwrap(), "");
     let result = backend.installed().await;
+    fs::write(root.join("fail-info"), "").unwrap();
+    let without_info = backend.installed().await.unwrap();
     fs::write(root.join("fail-query"), "").unwrap();
     let failed = backend.installed().await;
     std::env::set_var("PATH", old_path);
@@ -57,12 +62,19 @@ esac
     std::env::remove_var("TCMS_INVENTORY_FIXTURE");
     let packages = result.unwrap();
     assert_eq!(packages.len(), 3000);
+    assert_eq!(packages[0].explicitly_installed, Some(true));
+    assert_eq!(packages[1].explicitly_installed, Some(false));
+    assert_eq!(packages[2].explicitly_installed, None);
+    assert_eq!(packages[0].size_bytes, Some(1024 * 1024 * 1024));
+    assert_eq!(without_info.len(), 3000);
+    assert!(without_info.iter().all(|p| p.explicitly_installed.is_none() && p.size_bytes.is_none()));
     assert_eq!(packages[0].id.id, "package-00000");
     assert_eq!(packages[2999].id.id, "package-02999");
     assert!(packages
         .iter()
         .all(|package| package.state == InstallState::Installed));
     let calls = fs::read_to_string(root.join("calls")).unwrap();
+    assert_eq!(calls.lines().filter(|l| l.ends_with(" -Qi")).count(), 2);
     assert!(
         calls.lines().any(|line| line.starts_with("-Qo --")),
         "fixture must reproduce the desktop query failure"

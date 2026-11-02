@@ -166,6 +166,10 @@ pub enum ForeignStatus {
     Unverified,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Screenshot { pub url: String, pub caption: Option<String> }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseNote { pub version: String, pub date: Option<String>, pub description: String, pub url: Option<String> }
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: PackageId,
     pub name: String,
@@ -199,6 +203,13 @@ pub struct Package {
     pub installed_elsewhere: bool,
     #[serde(default)]
     pub foreign_status: Option<ForeignStatus>,
+    /// Local pacman install reason; never inferred from application type.
+    #[serde(default)]
+    pub explicitly_installed: Option<bool>,
+    #[serde(default)]
+    pub screenshots: Vec<Screenshot>,
+    #[serde(default)]
+    pub releases: Vec<ReleaseNote>,
     pub categories: Vec<String>,
 }
 
@@ -241,6 +252,9 @@ impl Package {
             state,
             installed_elsewhere: false,
             foreign_status: None,
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: Vec::new(),
         }
     }

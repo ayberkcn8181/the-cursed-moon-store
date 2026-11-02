@@ -385,6 +385,9 @@ mod tests {
             state: InstallState::Available,
             installed_elsewhere: false,
             foreign_status: None,
+            explicitly_installed: None,
+            screenshots: Vec::new(),
+            releases: Vec::new(),
             categories: vec!["Codec".into()],
         };
         assert!(cfg.allows_package(&app));
