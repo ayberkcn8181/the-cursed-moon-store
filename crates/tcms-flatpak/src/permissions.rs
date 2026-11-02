@@ -85,6 +85,9 @@ impl Change {
             args.push("--reset".into());
         } else {
             args.extend(self.changes.iter().map(|(p, a)| p.argument(*a)));
+            if self.changes.contains(&(Permission::X11, false)) {
+                args.push("--nosocket=fallback-x11".into());
+            }
         }
         // APP must always be present: omission would change global permissions.
         args.extend(["--".into(), self.id.id.clone()]);
@@ -193,6 +196,10 @@ mod tests {
                 "org.example.App"
             ]
         );
+        c.changes = vec![(Permission::X11, false)];
+        let denied = c.arguments().unwrap();
+        assert!(denied.contains(&"--nosocket=x11".into()));
+        assert!(denied.contains(&"--nosocket=fallback-x11".into()));
         c.id.flatpak.as_mut().unwrap().installation = FlatpakInstallation::System;
         c.reset = true;
         c.changes.clear();

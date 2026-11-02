@@ -1,4 +1,4 @@
-//! Preview/execution integration using isolated command fixtures.
+//! Read-only previews and stale-plan refusal using isolated command fixtures.
 use std::{fs, os::unix::fs::PermissionsExt};
 use tcms_pacman::PacmanBackend;
 #[tokio::test]
@@ -31,8 +31,7 @@ esac
 "#,
     )
     .unwrap();
-    fs::write(root.join("pkexec"), "#!/bin/sh\nexec \"$@\"\n").unwrap();
-    for n in ["pacman", "pacman-conf", "paccache", "pkexec"] {
+    for n in ["pacman", "pacman-conf", "paccache"] {
         fs::set_permissions(root.join(n), fs::Permissions::from_mode(0o755)).unwrap();
     }
     let old = std::env::var_os("PATH").unwrap();
@@ -46,30 +45,30 @@ esac
     let orphans = backend.orphans().await.unwrap();
     assert_eq!(orphans.len(), 1);
     fs::write(root.join("changed"), "").unwrap();
-    assert!(backend.remove_orphans(&orphans).await.is_err());
+    assert_eq!(
+        backend
+            .remove_orphans(&orphans)
+            .await
+            .unwrap_err()
+            .to_string(),
+        tcms_core::t("management.changed")
+    );
     assert!(!root.join("writes").exists());
     fs::remove_file(root.join("changed")).unwrap();
-    backend.remove_orphans(&orphans).await.unwrap();
+    assert_eq!(backend.orphans().await.unwrap(), orphans);
+    assert!(backend.remove_orphans(&[]).await.is_err());
     let plan = backend.cache_plan().await.unwrap();
     assert_eq!(plan.files.len(), 1);
     fs::write(&plan.files[0].path, "changed archive").unwrap();
-    assert!(backend.clean_cache(&plan).await.is_err());
     assert_eq!(
-        fs::read_to_string(root.join("writes"))
-            .unwrap()
-            .lines()
-            .count(),
-        1
+        backend.clean_cache(&plan).await.unwrap_err().to_string(),
+        tcms_core::t("management.changed")
     );
-    let plan = backend.cache_plan().await.unwrap();
-    backend.clean_cache(&plan).await.unwrap();
-    let writes = fs::read_to_string(root.join("writes")).unwrap();
-    assert_eq!(writes.lines().next().unwrap(), "-R --noconfirm -- orphan");
-    assert!(writes
-        .lines()
-        .nth(1)
-        .unwrap()
-        .starts_with("--remove --keep 3 --cachedir "));
+    let mut refreshed = backend.cache_plan().await.unwrap();
+    assert_ne!(refreshed, plan);
+    refreshed.files.clear();
+    assert!(backend.clean_cache(&refreshed).await.is_err());
+    assert!(!root.join("writes").exists());
     std::env::set_var("PATH", old);
     std::env::remove_var("TCMS_CLEANUP_FIXTURE");
     fs::remove_dir_all(root).unwrap();

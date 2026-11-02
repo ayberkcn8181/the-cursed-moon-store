@@ -71,12 +71,16 @@ impl PacmanBackend {
             return Err(Error::Message(t("management.changed")));
         }
         // No recursive removal: only displayed orphans become targets.
-        let mut args = self.conf_args();
-        args.extend(["-R".into(), "--noconfirm".into(), "--".into()]);
-        args.extend(expected.iter().map(|p| p.name.clone()));
+        let args = self.orphan_removal_args(expected);
         let refs: Vec<_> = args.iter().map(String::as_str).collect();
         process::run_privileged_pacman(&refs, "remove orphan packages").await?;
         Ok(())
+    }
+    fn orphan_removal_args(&self, expected: &[Orphan]) -> Vec<String> {
+        let mut args = self.conf_args();
+        args.extend(["-R".into(), "--noconfirm".into(), "--".into()]);
+        args.extend(expected.iter().map(|p| p.name.clone()));
+        args
     }
     pub async fn cache_plan(&self) -> Result<CachePlan> {
         self.ensure_enabled()?;
@@ -185,6 +189,26 @@ fn candidate_paths(output: &str) -> Result<Vec<&str>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn orphan_removal_limits_targets_and_preserves_custom_configuration() {
+        let backend = PacmanBackend::new(true, "/custom/pacman.conf", "--recursive");
+        let orphans = vec![Orphan {
+            name: "unused-library".into(),
+            version: "1-1".into(),
+            size: None,
+        }];
+        assert_eq!(
+            backend.orphan_removal_args(&orphans),
+            [
+                "--config",
+                "/custom/pacman.conf",
+                "-R",
+                "--noconfirm",
+                "--",
+                "unused-library"
+            ]
+        );
+    }
     #[test]
     fn parse_candidates_without_treating_status_messages_as_files() {
         assert_eq!(

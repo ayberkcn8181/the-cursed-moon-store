@@ -26,10 +26,7 @@ esac
 "#,
     )
     .unwrap();
-    fs::write(root.join("pkexec"), "#!/bin/sh\nexec \"$@\"\n").unwrap();
-    for n in ["flatpak", "pkexec"] {
-        fs::set_permissions(root.join(n), fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    fs::set_permissions(root.join("flatpak"), fs::Permissions::from_mode(0o755)).unwrap();
     let old = std::env::var_os("PATH").unwrap();
     std::env::set_var(
         "PATH",
@@ -37,14 +34,16 @@ esac
             .unwrap(),
     );
     std::env::set_var("TCMS_PERMISSIONS_FIXTURE", &root);
-    let backend = FlatpakBackend::new(true, "user", "");
+    // Exercise the user's installation even when the configured default differs.
+    // Never impersonate pkexec: privileged commands deliberately prefer /usr/bin.
+    let backend = FlatpakBackend::new(true, "system", "");
     let mut id = PackageId::new(PackageSource::Flatpak, "org.example.App");
     id.flatpak = Some(FlatpakRef {
         kind: "app".into(),
         arch: "x86_64".into(),
         branch: "beta".into(),
         origin: "testing".into(),
-        installation: FlatpakInstallation::System,
+        installation: FlatpakInstallation::User,
     });
     let snapshot = backend.permissions(&id).await.unwrap();
     let mut c = Change {
@@ -54,7 +53,14 @@ esac
         reset: false,
     };
     fs::write(root.join("overrides"), "[Context]\nshared=ipc;\n").unwrap();
-    assert!(backend.change_permissions(&c).await.is_err());
+    assert_eq!(
+        backend
+            .change_permissions(&c)
+            .await
+            .unwrap_err()
+            .to_string(),
+        tcms_core::t("management.changed")
+    );
     assert!(!root.join("writes").exists());
     c.expected_overrides = backend.permissions(&c.id).await.unwrap().overrides;
     backend.change_permissions(&c).await.unwrap();
@@ -67,13 +73,13 @@ esac
             .lines()
             .collect::<Vec<_>>(),
         [
-            "override --system --unshare=network -- org.example.App",
-            "override --system --reset -- org.example.App"
+            "override --user --unshare=network -- org.example.App",
+            "override --user --reset -- org.example.App"
         ]
     );
     assert!(fs::read_to_string(root.join("calls"))
         .unwrap()
-        .contains("info --system --show-permissions -- app/org.example.App/x86_64/beta"));
+        .contains("info --user --show-permissions -- app/org.example.App/x86_64/beta"));
     std::env::set_var("PATH", old);
     std::env::remove_var("TCMS_PERMISSIONS_FIXTURE");
     fs::remove_dir_all(root).unwrap();
