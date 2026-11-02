@@ -166,9 +166,17 @@ pub enum ForeignStatus {
     Unverified,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Screenshot { pub url: String, pub caption: Option<String> }
+pub struct Screenshot {
+    pub url: String,
+    pub caption: Option<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleaseNote { pub version: String, pub date: Option<String>, pub description: String, pub url: Option<String> }
+pub struct ReleaseNote {
+    pub version: String,
+    pub date: Option<String>,
+    pub description: String,
+    pub url: Option<String>,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: PackageId,

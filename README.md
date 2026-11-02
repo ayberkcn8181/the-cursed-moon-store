@@ -15,10 +15,14 @@ A graphical software center for **Arch Linux and Arch-based distributions**, bui
 ## Features
 
 - Search applications and browse featured software from Flathub.
-- View and search the full installed inventory, including local packages, verified AUR packages and Flatpak runtimes.
+- Filter installed packages by application type, source, installation reason and size.
 - Preview affected packages, dependencies and estimated download/disk sizes before changes.
 - Manage updates for user and system Flatpaks, with per-source results and optional cache-only downloads.
-- Inspect transaction history, copy logs and cancel queued operations.
+- Inspect transaction history, copy diagnostic reports and cancel queued operations.
+- Review AUR build files interactively in a terminal before building.
+- View screenshots, release notes and versions across software sources.
+- Edit application-specific Flatpak permissions and inspect permission changes before updates.
+- Preview orphan packages, unused Flatpak runtimes and old pacman cache before cleanup.
 - Configure package sources, source priorities and AUR helpers.
 - Install and manage Proton-GE, Wine-GE and DXVK, with Steam, Lutris and Heroic discovery.
 - Use the interface in nine languages, including English and Turkish.
@@ -28,7 +32,7 @@ A graphical software center for **Arch Linux and Arch-based distributions**, bui
 - An up-to-date Arch-based system; prebuilt packages target **x86_64**.
 - GTK 4.14+ and libadwaita 1.6+.
 - A desktop session with a Polkit authentication agent for system package operations.
-- Optional: a configured helper such as `paru` or `yay` for building and installing AUR packages.
+- Optional: `paru` or `yay` and a supported terminal (such as Konsole or XTerm) for interactive AUR review.
 
 The Arch package declares its runtime dependencies, which pacman resolves during installation.
 
@@ -68,7 +72,11 @@ the-cursed-moon-store
 
 Run the application as a regular user. System package installations and updates use a full pacman system upgrade; authentication is requested when needed.
 
-AUR previews show declared dependencies; the helper resolves the final build plan. Sizes that cannot be determined are shown as unknown. Plans may change if repository data changes before execution.
+AUR previews show declared dependencies; the helper opens in a terminal for build-file review and resolves the final build plan. Sizes that cannot be determined are shown as unknown. Plans may change if repository data changes before execution.
+
+Use **Ctrl+F** to search the current Installed or Explore page, **Ctrl+1–5** to switch sections, and **Alt+Left** to return from application details. System maintenance is available from the main menu.
+
+New management features are available in English and Turkish; untranslated strings in other languages fall back to English. Diagnostic reports remove common private identifiers locally and remain editable before copying.
 
 Settings are stored in `$XDG_CONFIG_HOME/the-cursed-moon-store/config.toml`, defaulting to `~/.config/the-cursed-moon-store/config.toml`. Check the installed version with `the-cursed-moon-store --version`.
 

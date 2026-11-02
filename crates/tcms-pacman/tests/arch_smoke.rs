@@ -62,6 +62,8 @@ async fn real_pacman_installs_queries_and_removes_an_isolated_fixture() {
         .unwrap();
     assert_eq!(installed.version, "1.0-1");
     assert_eq!(installed.state, InstallState::Installed);
+    assert_eq!(installed.explicitly_installed, Some(true));
+    assert!(installed.size_bytes.is_some());
     assert!(
         installed.desktop_id.is_none(),
         "fixture intentionally has no desktop entry"
@@ -73,6 +75,23 @@ async fn real_pacman_installs_queries_and_removes_an_isolated_fixture() {
         .unwrap();
     assert_eq!(package.version, "1.0-1");
     assert_eq!(package.state, InstallState::Installed);
+    checked(
+        "pacman",
+        &["--config", conf, "-D", "--asdeps", "tcms-smoke"],
+    );
+    let orphans = backend.orphans().await.unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].name, "tcms-smoke");
+    for version in ["2.0", "3.0", "4.0"] {
+        fs::copy(
+            &archive,
+            root.join(format!("tcms-smoke-{version}-1-any.pkg.tar.gz")),
+        )
+        .unwrap();
+    }
+    let cache = backend.cache_plan().await.unwrap();
+    assert_eq!(cache.files.len(), 1);
+    assert_eq!(cache.files[0].path, archive);
     checked(
         "pacman",
         &[

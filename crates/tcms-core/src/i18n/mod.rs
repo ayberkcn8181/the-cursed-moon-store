@@ -159,6 +159,7 @@ mod tests {
     fn catalogs_cover_english_keys() {
         let en: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(include_str!("../../i18n/en.json")).unwrap();
+        let pattern = regex::Regex::new(r"\{[a-zA-Z_][a-zA-Z_0-9]*\}").unwrap();
         for (code, raw) in [
             ("tr", include_str!("../../i18n/tr.json")),
             ("ru", include_str!("../../i18n/ru.json")),
@@ -173,6 +174,18 @@ mod tests {
                 serde_json::from_str(raw).unwrap_or_else(|e| panic!("{code}: {e}"));
             for key in en.keys() {
                 assert!(map.contains_key(key), "{code} missing key {key}");
+                let placeholders =
+                    |value: &serde_json::Value| -> std::collections::BTreeSet<String> {
+                        pattern
+                            .find_iter(value.as_str().expect("translation string"))
+                            .map(|m| m.as_str().to_string())
+                            .collect()
+                    };
+                assert_eq!(
+                    placeholders(&en[key]),
+                    placeholders(&map[key]),
+                    "{code}: placeholder mismatch in {key}"
+                );
             }
         }
     }

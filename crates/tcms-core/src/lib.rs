@@ -43,3 +43,4 @@ pub mod history;
 pub mod terminal;
 
 pub mod inventory;
+pub mod screenshots;

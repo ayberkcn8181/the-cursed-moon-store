@@ -525,6 +525,9 @@ impl Backend for AurBackend {
         };
         let mut seen = std::collections::HashSet::new();
         let mut repos = std::collections::HashSet::new();
+        if self.extra_arg_list().iter().any(|a| a == "--noconfirm") {
+            return Err(Error::Config(tcms_core::t("aur.review_unsafe_args")));
+        }
         let mut preview = TransactionPreview::default();
         while !pending.is_empty() {
             let batch: Vec<_> = std::mem::take(&mut pending)

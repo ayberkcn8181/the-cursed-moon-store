@@ -1,6 +1,7 @@
 //! Pacman (official / system repo) backend.
 
 pub mod desktop;
+pub mod maintenance;
 
 use std::collections::HashMap;
 
@@ -550,10 +551,14 @@ impl Backend for PacmanBackend {
             }
         };
         enrich_installed(&mut packages, &apps, &updates);
-        let mut args = self.conf_args(); args.push("-Qi".into());
+        let mut args = self.conf_args();
+        args.push("-Qi".into());
         match run("pacman", &args).await {
             Ok(out) if out.success() => enrich_local_metadata(&mut packages, &out.stdout),
-            other => tracing::warn!(?other, "local metadata unavailable; keeping every installed package"),
+            other => tracing::warn!(
+                ?other,
+                "local metadata unavailable; keeping every installed package"
+            ),
         }
         let mut args = self.conf_args();
         args.push("-Qmq".into());
@@ -736,15 +741,23 @@ fn enrich_installed(
 }
 
 fn enrich_local_metadata(packages: &mut [Package], output: &str) {
-    let metadata: HashMap<_, _> = output.split("\n\n").filter_map(|block| {
-        let info = parse_package_info(block); Some((info.name.clone()?, info))
-    }).collect();
+    let metadata: HashMap<_, _> = output
+        .split("\n\n")
+        .filter_map(|block| {
+            let info = parse_package_info(block);
+            Some((info.name.clone()?, info))
+        })
+        .collect();
     for package in packages {
         if let Some(info) = metadata.get(&package.id.id) {
             package.size_bytes = info.size_bytes;
             package.explicitly_installed = info.explicitly_installed;
-            if package.summary.is_empty() { package.summary = info.description.clone().unwrap_or_default(); }
-            if package.description.is_empty() { package.description = info.description.clone().unwrap_or_default(); }
+            if package.summary.is_empty() {
+                package.summary = info.description.clone().unwrap_or_default();
+            }
+            if package.description.is_empty() {
+                package.description = info.description.clone().unwrap_or_default();
+            }
         }
     }
 }
@@ -814,11 +827,13 @@ fn parse_package_info(stdout: &str) -> PacmanInfo {
             "URL" => info.url = Some(value.to_string()),
             "Licenses" => info.licenses = Some(value.to_string()),
             "Packager" => info.packager = Some(value.to_string()),
-            "Install Reason" => info.explicitly_installed = match value {
-                "Explicitly installed" => Some(true),
-                "Installed as a dependency for another package" => Some(false),
-                _ => None,
-            },
+            "Install Reason" => {
+                info.explicitly_installed = match value {
+                    "Explicitly installed" => Some(true),
+                    "Installed as a dependency for another package" => Some(false),
+                    _ => None,
+                }
+            }
             "Installed Size" => {
                 info.size_bytes = info.size_bytes.or_else(|| parse_size_bytes(value));
             }

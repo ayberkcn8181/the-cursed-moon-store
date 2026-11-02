@@ -59,6 +59,7 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
     titles.append(
         &Label::builder()
             .label(&pkg.name)
+            .wrap_mode(gtk4::pango::WrapMode::WordChar)
             .halign(Align::Start)
             .css_classes(["title-1"])
             .wrap(true)
@@ -88,7 +89,7 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
     }
     header.append(&titles);
 
-    let actions = GtkBox::new(Orientation::Vertical, 8);
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
     actions.set_valign(Align::Center);
     // Install belongs only next to each repository below. The header shows
     // update/remove/open for a source that is actually installed on this system.
@@ -130,14 +131,19 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
         });
         actions.append(&open_btn);
     }
-    header.append(&actions);
     root.append(&header);
+    root.append(&actions);
 
+    if !pkg.screenshots.is_empty() {
+        root.append(&section_title(&t("detail.screenshots")));
+        root.append(&screenshot_gallery(pkg, bridge));
+    }
     if !pkg.description.is_empty() {
         root.append(&section_title(&t("detail.description")));
         root.append(
             &Label::builder()
                 .label(&pkg.description)
+                .wrap_mode(gtk4::pango::WrapMode::WordChar)
                 .halign(Align::Start)
                 .wrap(true)
                 .xalign(0.0)
@@ -185,7 +191,38 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
             bridge,
         ));
     }
+    if !pkg.categories.is_empty() {
+        meta.add(&info_row(
+            &t("detail.categories"),
+            &pkg.categories.join(" · "),
+            None,
+            bridge,
+        ));
+    }
     root.append(&meta);
+    if !pkg.releases.is_empty() {
+        let releases = libadwaita::PreferencesGroup::builder()
+            .title(t("detail.releases"))
+            .build();
+        for release in &pkg.releases {
+            let title = match &release.date {
+                Some(date) => format!("{} · {date}", release.version),
+                None => release.version.clone(),
+            };
+            let description = if release.description.is_empty() {
+                t("detail.no_release_notes")
+            } else {
+                release.description.clone()
+            };
+            releases.add(&info_row(
+                &title,
+                &description,
+                release.url.as_deref(),
+                bridge,
+            ));
+        }
+        root.append(&releases);
+    }
 
     let sources = libadwaita::PreferencesGroup::builder()
         .title(t("detail.sources"))
@@ -206,10 +243,24 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
         .unwrap_or_else(|| t("detail.permissions_unknown"));
     perms.add(
         &libadwaita::ActionRow::builder()
+            .use_markup(false)
             .title(t("detail.permissions"))
             .subtitle(perm_text)
             .build(),
     );
+    if pkg.id.flatpak.as_ref().is_some_and(|r| r.kind == "app")
+        && !pkg.installed_elsewhere
+        && matches!(
+            pkg.state,
+            tcms_core::InstallState::Installed | tcms_core::InstallState::Updatable
+        )
+    {
+        let edit = gtk4::Button::with_label(&t("permissions.title"));
+        let bridge = bridge.clone();
+        let id = pkg.id.clone();
+        edit.connect_clicked(move |_| crate::management::permissions(&bridge, id.clone()));
+        perms.add(&edit);
+    }
     root.append(&perms);
 
     let copy_id = gtk4::Button::builder()
@@ -248,6 +299,87 @@ fn build_detail_content(pkg: &Package, alts: &[Package], bridge: &UiBridge) -> S
         .build()
 }
 
+fn screenshot_gallery(pkg: &Package, bridge: &UiBridge) -> GtkBox {
+    let root = GtkBox::new(Orientation::Vertical, 8);
+    let carousel = libadwaita::Carousel::builder()
+        .hexpand(true)
+        .allow_mouse_drag(true)
+        .build();
+    for screenshot in pkg.screenshots.iter().take(5) {
+        let page = GtkBox::new(Orientation::Vertical, 6);
+        let picture = gtk4::Picture::builder()
+            .content_fit(gtk4::ContentFit::Contain)
+            .can_shrink(true)
+            .height_request(280)
+            .hexpand(true)
+            .build();
+        let caption = screenshot
+            .caption
+            .clone()
+            .unwrap_or_else(|| pkg.name.clone());
+        picture.set_alternative_text(Some(&caption));
+        let status = Label::builder()
+            .label(t("detail.loading_image"))
+            .wrap(true)
+            .build();
+        page.append(&picture);
+        page.append(&status);
+        carousel.append(&page);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let url = screenshot.url.clone();
+        bridge.store.runtime().spawn(async move {
+            let _ = tx.send(tcms_core::screenshots::cached(&url).await);
+        });
+        let weak_picture = picture.downgrade();
+        let weak_status = status.downgrade();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let (Some(picture), Some(status)) = (weak_picture.upgrade(), weak_status.upgrade())
+            else {
+                return glib::ControlFlow::Break;
+            };
+            match rx.try_recv() {
+                Ok(Ok(path)) => {
+                    match gtk4::gdk::Texture::from_filename(path) {
+                        Ok(texture) => {
+                            picture.set_paintable(Some(&texture));
+                            status.set_label(&caption);
+                        }
+                        Err(_) => status.set_label(&t("detail.image_failed")),
+                    }
+                    glib::ControlFlow::Break
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    status.set_label(&t("detail.image_failed"));
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            }
+        });
+    }
+    root.append(&carousel);
+    let controls = GtkBox::new(Orientation::Horizontal, 8);
+    controls.set_halign(Align::Center);
+    for (icon, label, direction) in [
+        ("go-previous-symbolic", "detail.previous_image", -1.0),
+        ("go-next-symbolic", "detail.next_image", 1.0),
+    ] {
+        let button = gtk4::Button::builder()
+            .icon_name(icon)
+            .tooltip_text(t(label))
+            .build();
+        let carousel = carousel.clone();
+        button.connect_clicked(move |_| {
+            let next = (carousel.position().round() + direction)
+                .clamp(0.0, f64::from(carousel.n_pages().saturating_sub(1)))
+                as u32;
+            carousel.scroll_to(&carousel.nth_page(next), true);
+        });
+        controls.append(&button);
+    }
+    root.append(&controls);
+    root
+}
+
 fn section_title(text: &str) -> Label {
     Label::builder()
         .label(text)
@@ -273,6 +405,7 @@ fn info_row(
     bridge: &UiBridge,
 ) -> libadwaita::ActionRow {
     let row = libadwaita::ActionRow::builder()
+        .use_markup(false)
         .title(title)
         .subtitle(subtitle)
         .build();
@@ -294,11 +427,11 @@ fn format_size(bytes: u64) -> String {
     const GB: f64 = MB * 1024.0;
     let b = bytes as f64;
     if b >= GB {
-        format!("{:.1} GB", b / GB)
+        format!("{:.1} GiB", b / GB)
     } else if b >= MB {
-        format!("{:.1} MB", b / MB)
+        format!("{:.1} MiB", b / MB)
     } else if b >= KB {
-        format!("{:.0} KB", b / KB)
+        format!("{:.0} KiB", b / KB)
     } else {
         format!("{bytes} B")
     }
@@ -311,8 +444,23 @@ fn source_row(pkg: &Package, bridge: &UiBridge) -> libadwaita::ActionRow {
         state_label_local(pkg.state)
     };
     let row = libadwaita::ActionRow::builder()
+        .use_markup(false)
         .title(t(pkg.source_i18n_key()))
-        .subtitle(format!("{} · {}", pkg.id.display_ref(), state))
+        .subtitle(format!(
+            "{} · {}\n{} · {}",
+            pkg.id.display_ref(),
+            state,
+            if pkg.version.is_empty() {
+                t("detail.unknown")
+            } else if let Some(next) = &pkg.available_version {
+                format!("{} → {next}", pkg.version)
+            } else {
+                pkg.version.clone()
+            },
+            pkg.size_bytes
+                .map(format_size)
+                .unwrap_or_else(|| t("inventory.size_unknown"))
+        ))
         .build();
     let btn = package_action_button(pkg, bridge);
     row.add_suffix(&btn);

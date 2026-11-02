@@ -119,7 +119,12 @@ mod tests {
             .args(["-c", &cmd])
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(7), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(7),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         assert_eq!(
             std::fs::read_to_string(stage.0.join("status"))
                 .unwrap()

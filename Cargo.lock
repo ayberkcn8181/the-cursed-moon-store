@@ -1729,7 +1729,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tcms-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1750,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-aur"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1765,7 +1765,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-compatibility"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "cap-std",
@@ -1786,7 +1786,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1795,6 +1795,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "toml 0.8.23",
@@ -1803,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-flatpak"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1816,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "tcms-pacman"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "async-trait",

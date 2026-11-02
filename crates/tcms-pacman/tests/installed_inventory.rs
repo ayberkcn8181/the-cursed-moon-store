@@ -67,7 +67,9 @@ esac
     assert_eq!(packages[2].explicitly_installed, None);
     assert_eq!(packages[0].size_bytes, Some(1024 * 1024 * 1024));
     assert_eq!(without_info.len(), 3000);
-    assert!(without_info.iter().all(|p| p.explicitly_installed.is_none() && p.size_bytes.is_none()));
+    assert!(without_info
+        .iter()
+        .all(|p| p.explicitly_installed.is_none() && p.size_bytes.is_none()));
     assert_eq!(packages[0].id.id, "package-00000");
     assert_eq!(packages[2999].id.id, "package-02999");
     assert!(packages

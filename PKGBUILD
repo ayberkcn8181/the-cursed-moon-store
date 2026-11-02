@@ -1,6 +1,6 @@
 # Maintainer: Cursed Moon
 pkgname=the-cursed-moon-store
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="GNOME Software-like store for Arch: pacman, Flatpak, and AUR"
 arch=('x86_64')

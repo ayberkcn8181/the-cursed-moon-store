@@ -41,6 +41,129 @@ struct StoreInner {
 }
 
 impl StoreService {
+    fn management_read<T: Send + 'static>(
+        &self,
+        task: impl FnOnce(Self) -> tcms_core::Result<T> + Send + 'static,
+        done: impl FnOnce(tcms_core::Result<T>) + 'static,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let store = self.clone();
+        if !spawn_named("tcms-management-read", move || {
+            let _ = tx.send(task(store));
+        }) {
+            done(Err(tcms_core::Error::Message(
+                "Could not start management worker".into(),
+            )));
+            return;
+        }
+        poll_local(
+            rx,
+            Err(tcms_core::Error::Message(
+                "Management worker stopped".into(),
+            )),
+            done,
+        );
+    }
+    pub fn permissions_async(
+        &self,
+        id: PackageId,
+        done: impl FnOnce(tcms_core::Result<tcms_flatpak::permissions::Snapshot>) + 'static,
+    ) {
+        self.management_read(
+            move |store| {
+                let (_, flatpak, _) = store.backends();
+                store.runtime.block_on(flatpak.permissions(&id))
+            },
+            done,
+        );
+    }
+    pub fn cleanup_preview_async(
+        &self,
+        kind: crate::management::CleanupKind,
+        done: impl FnOnce(tcms_core::Result<crate::management::Operation>) + 'static,
+    ) {
+        self.management_read(
+            move |store| {
+                use crate::management::{CleanupKind, Operation};
+                let (pacman, flatpak, _) = store.backends();
+                store.runtime.block_on(async {
+                    match kind {
+                        CleanupKind::Orphans => Ok(Operation::Orphans(pacman.orphans().await?)),
+                        CleanupKind::Cache => Ok(Operation::Cache(pacman.cache_plan().await?)),
+                        CleanupKind::Flatpak(scope) => Ok(Operation::Flatpak(
+                            scope.clone(),
+                            flatpak.unused(scope).await?,
+                        )),
+                    }
+                })
+            },
+            done,
+        );
+    }
+    pub fn management_apply_async(
+        &self,
+        title: String,
+        operation: crate::management::Operation,
+        on_progress: impl Fn(String) + 'static,
+        done: impl FnOnce(tcms_core::Result<()>) + 'static,
+    ) {
+        let store = self.clone();
+        let job = self.history.enqueue(title);
+        let (tx, rx) = mpsc::channel();
+        let (progress, progress_rx) = mpsc::sync_channel(64);
+        poll_progress(progress_rx, on_progress);
+        if !spawn_named("tcms-management", move || {
+            let Some(running) = store.history.acquire(job) else {
+                let _ = tx.send(Err(tcms_core::Error::Cancelled));
+                return;
+            };
+            let _transaction = PACKAGE_TRANSACTIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let (pacman, flatpak, _) = store.backends();
+            let result = store
+                .runtime
+                .block_on(tcms_core::process::with_progress_log(
+                    progress,
+                    running.log.clone(),
+                    async {
+                        use crate::management::Operation;
+                        match operation {
+                            Operation::Permissions(change) => {
+                                flatpak.change_permissions(&change).await
+                            }
+                            Operation::Orphans(items) => pacman.remove_orphans(&items).await,
+                            Operation::Cache(plan) => pacman.clean_cache(&plan).await,
+                            Operation::Flatpak(scope, refs) => {
+                                flatpak.remove_unused(scope, &refs).await
+                            }
+                        }
+                    },
+                ));
+            store.history.finish(
+                job,
+                result.as_ref().err().map(ToString::to_string).as_deref(),
+            );
+            store.installed_cache.invalidate();
+            store.updates_cache.invalidate();
+            let _ = tx.send(result);
+        }) {
+            self.history
+                .finish(job, Some("Could not start management worker"));
+            done(Err(tcms_core::Error::Message(
+                "Could not start management worker".into(),
+            )));
+            return;
+        }
+        poll_local(
+            rx,
+            Err(tcms_core::Error::Message(
+                "Management worker stopped".into(),
+            )),
+            done,
+        );
+    }
+
     pub fn new() -> Self {
         match AppConfig::load() {
             Ok(config) => Self::from_config(config),
@@ -249,6 +372,7 @@ impl StoreService {
         let mut detailed = self.enrich_one(pkg);
         let mut alts = self.resolve_install_candidates_light(pkg);
         alts.retain(|p| p.id != detailed.id);
+        alts = alts.iter().map(|alt| self.enrich_one(alt)).collect();
         self.annotate_install_states(std::slice::from_mut(&mut detailed));
         self.annotate_install_states(&mut alts);
         (detailed, alts)

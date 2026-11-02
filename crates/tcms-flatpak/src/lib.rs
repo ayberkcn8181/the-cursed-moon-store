@@ -1,5 +1,7 @@
 //! Flatpak / Flathub backend.
 
+pub mod maintenance;
+pub mod permissions;
 mod preview;
 use std::collections::HashMap;
 
@@ -215,6 +217,22 @@ impl FlatpakBackend {
             self.list_refs("runtime", false),
         )?;
         apps.extend(runtimes);
+        let scope = self.scope()?;
+        match tokio::task::spawn_blocking(move || maintenance::installed_sizes(scope)).await {
+            Ok(Ok(sizes)) => {
+                for package in &mut apps {
+                    package.size_bytes = package
+                        .id
+                        .flatpak_ref()
+                        .ok()
+                        .and_then(|r| sizes.get(&r).copied());
+                }
+            }
+            other => tracing::warn!(
+                ?other,
+                "Flatpak size metadata unavailable; retaining installed refs"
+            ),
+        }
         Ok(apps)
     }
 
@@ -263,6 +281,11 @@ impl FlatpakBackend {
             .is_some_and(|identity| identity.origin == "flathub")
         {
             if let Ok(meta) = tcms_core::fetch_flathub_app(&pkg.id.id).await {
+                pkg.screenshots = meta.screenshots;
+                pkg.releases = meta.releases;
+                if !meta.categories.is_empty() {
+                    pkg.categories = meta.categories;
+                }
                 if pkg.summary.is_empty() {
                     pkg.summary = meta.summary;
                 }

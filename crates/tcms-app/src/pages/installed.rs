@@ -35,9 +35,20 @@ impl InstalledPage {
 
     pub fn focus_search(&self) {
         fn focus(widget: &gtk4::Widget) -> bool {
-            if let Some(search) = widget.downcast_ref::<gtk4::SearchEntry>() { search.grab_focus(); return true; }
-            let mut child = widget.first_child(); while let Some(widget) = child { if focus(&widget) { return true; } child = widget.next_sibling(); } false
-        } focus(self.list_host.upcast_ref());
+            if let Some(search) = widget.downcast_ref::<gtk4::SearchEntry>() {
+                search.grab_focus();
+                return true;
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if focus(&widget) {
+                    return true;
+                }
+                child = widget.next_sibling();
+            }
+            false
+        }
+        focus(self.list_host.upcast_ref());
     }
     pub fn reload(&self) {
         while let Some(child) = self.list_host.first_child() {
